@@ -1,5 +1,5 @@
 import { createStore, produce } from "solid-js/store";
-import type { SceneElement, Tool } from "./scene";
+import { reconcileBindings, type SceneElement, type Tool } from "./scene";
 
 interface AppState {
   elements: SceneElement[];
@@ -39,6 +39,9 @@ export function updateElement(id: string, patch: Partial<SceneElement>) {
       const el = s.elements.find((e) => e.id === id);
       if (el) {
         Object.assign(el, patch);
+        // Moving/resizing a rectangle drags its bound arrow endpoints along;
+        // editing an arrow endpoint's binding snaps it into place.
+        reconcileBindings(s.elements);
         s.dirty = true;
       }
     })
@@ -50,6 +53,9 @@ export function removeElement(id: string) {
     produce((s) => {
       s.elements = s.elements.filter((e) => e.id !== id);
       if (s.selectedId === id) s.selectedId = null;
+      // Arrows bound to a removed rectangle keep their position but drop the
+      // now-dangling binding.
+      reconcileBindings(s.elements);
       s.dirty = true;
     })
   );
@@ -63,6 +69,9 @@ export function setScene(elements: SceneElement[]) {
     produce((s) => {
       s.elements = elements;
       s.selectedId = null;
+      // Normalize any bound endpoints against their rectangles (and drop
+      // dangling bindings) as the freshly loaded document comes in.
+      reconcileBindings(s.elements);
       s.dirty = false;
     })
   );

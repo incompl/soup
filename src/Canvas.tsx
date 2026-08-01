@@ -1,5 +1,5 @@
 import { createEffect, createSignal, onCleanup, onMount, Show } from "solid-js";
-import { FONT, LINE_HEIGHT, newId, elementAt, type SceneElement } from "./scene";
+import { FONT, LINE_HEIGHT, newId, elementAt, handleAt, nearestAnchor, type AnchorSide, type HandlePos, type SceneElement } from "./scene";
 import { renderScene } from "./renderer";
 import { addElement, removeElement, select, setTool, state, updateElement } from "./store";
 
@@ -9,6 +9,9 @@ interface DragState {
   startY: number;
   // Snapshot of the element at drag start, for move deltas.
   original: SceneElement;
+  // Set when the drag started on a resize handle: the element is being
+  // reshaped (corner/endpoint follows the pointer) rather than moved.
+  handle?: HandlePos;
 }
 
 interface TextDraft {
@@ -76,6 +79,28 @@ function elementLeft(el: SceneElement): number {
   }
 }
 
+// Reshape a rectangle by dragging one corner handle to (px, py), deriving the
+// result from the drag-start snapshot so the opposite corner stays pinned for
+// the whole gesture (crossing it just flips the rect naturally). Arrow
+// endpoints are placed separately (see placeArrowEndpoint) since they can bind.
+function resizeElement(id: string, original: SceneElement, handle: HandlePos, px: number, py: number) {
+  if (original.type !== "rect") return;
+  let left = original.x;
+  let right = original.x + original.w;
+  let top = original.y;
+  let bottom = original.y + original.h;
+  if (handle.includes("w")) left = px;
+  if (handle.includes("e")) right = px;
+  if (handle.includes("n")) top = py;
+  if (handle.includes("s")) bottom = py;
+  updateElement(id, {
+    x: Math.min(left, right),
+    y: Math.min(top, bottom),
+    w: Math.abs(right - left),
+    h: Math.abs(bottom - top),
+  });
+}
+
 interface PointerSample {
   x: number;
   y: number;
@@ -96,6 +121,11 @@ export default function Canvas() {
   // Live text in the label editor, so the render effect can break the arrow
   // shaft around what's being typed (not just the committed label).
   const [labelText, setLabelText] = createSignal("");
+  // While an arrow endpoint is being placed (a new arrow drawn, or an existing
+  // end re-dragged), rectangles reveal their attachment spots and activeAnchor
+  // tracks the spot the endpoint would lock onto right now.
+  const [placingEnd, setPlacingEnd] = createSignal(false);
+  const [activeAnchor, setActiveAnchor] = createSignal<{ elementId: string; side: AnchorSide } | null>(null);
 
   let drag: DragState | null = null;
   let lastSample: PointerSample | null = null;
@@ -119,7 +149,20 @@ export default function Canvas() {
     const { w, h, dpr } = size();
     const ctx = canvasEl.getContext("2d");
     if (!ctx || w === 0) return;
-    renderScene(ctx, state.elements, state.selectedId, w, h, dpr, labelEdit()?.id ?? null, labelText());
+    renderScene(
+      ctx,
+      state.elements,
+      state.selectedId,
+      w,
+      h,
+      dpr,
+      labelEdit()?.id ?? null,
+      labelText(),
+      // Reveal attachment spots while placing an endpoint, and also whenever the
+      // arrow tool is active so the initial click can start bound to a spot.
+      placingEnd() || state.tool === "arrow",
+      activeAnchor()
+    );
   });
 
   function onKeyDown(e: KeyboardEvent) {
@@ -163,6 +206,20 @@ export default function Canvas() {
 
     switch (state.tool) {
       case "select": {
+        // Grabbing a resize handle of the already-selected element takes
+        // priority over selecting/moving whatever is underneath it.
+        const selected = state.selectedId
+          ? state.elements.find((el) => el.id === state.selectedId)
+          : undefined;
+        const grabbed = selected ? handleAt(selected, x, y) : null;
+        if (selected && grabbed) {
+          drag = { id: selected.id, startX: x, startY: y, original: { ...selected }, handle: grabbed };
+          // Re-dragging an arrow endpoint can re-bind it, so light up the spots.
+          if (selected.type === "arrow" && (grabbed === "start" || grabbed === "end")) {
+            setPlacingEnd(true);
+          }
+          break;
+        }
         const hit = elementAt(state.elements, x, y);
         select(hit?.id ?? null);
         if (hit) drag = { id: hit.id, startX: x, startY: y, original: { ...hit } };
@@ -175,7 +232,20 @@ export default function Canvas() {
         break;
       }
       case "arrow": {
-        const el: SceneElement = { id: newId(), type: "arrow", x1: x, y1: y, x2: x, y2: y };
+        // A new arrow can start bound: if the press lands on a spot, anchor its
+        // tail there, otherwise start free at the pointer.
+        const spot = nearestAnchor(state.elements, x, y);
+        setPlacingEnd(true);
+        setActiveAnchor(spot ? { elementId: spot.elementId, side: spot.side } : null);
+        const el: SceneElement = {
+          id: newId(),
+          type: "arrow",
+          x1: spot ? spot.x : x,
+          y1: spot ? spot.y : y,
+          x2: spot ? spot.x : x,
+          y2: spot ? spot.y : y,
+          startBinding: spot ? { elementId: spot.elementId, side: spot.side } : undefined,
+        };
         addElement(el);
         drag = { id: el.id, startX: x, startY: y, original: el };
         break;
@@ -212,8 +282,58 @@ export default function Canvas() {
     return { x: x + px, y: y + py };
   }
 
+  // Place an arrow endpoint at (px, py), snapping to a rectangle attachment
+  // spot when one is in range: bound → coordinates come from the spot and the
+  // binding is recorded; free → coordinates follow the pointer and any existing
+  // binding is cleared. Also updates the active-spot highlight shown while
+  // placing. Shared by drawing a new arrow and re-dragging an existing end.
+  function placeArrowEndpoint(id: string, which: "start" | "end", px: number, py: number) {
+    const spot = nearestAnchor(state.elements, px, py);
+    setActiveAnchor(spot ? { elementId: spot.elementId, side: spot.side } : null);
+    if (which === "start") {
+      updateElement(
+        id,
+        spot
+          ? { x1: spot.x, y1: spot.y, startBinding: { elementId: spot.elementId, side: spot.side } }
+          : { x1: px, y1: py, startBinding: undefined }
+      );
+    } else {
+      updateElement(
+        id,
+        spot
+          ? { x2: spot.x, y2: spot.y, endBinding: { elementId: spot.elementId, side: spot.side } }
+          : { x2: px, y2: py, endBinding: undefined }
+      );
+    }
+  }
+
+  // Cursor to show when hovering a resize handle, so it reads as grabbable.
+  const HANDLE_CURSOR: Record<HandlePos, string> = {
+    nw: "nwse-resize",
+    se: "nwse-resize",
+    ne: "nesw-resize",
+    sw: "nesw-resize",
+    start: "move",
+    end: "move",
+  };
+
   function onPointerMove(e: PointerEvent) {
-    if (!drag) return;
+    if (!drag) {
+      // Not dragging: reflect whether the pointer is over a resize handle of
+      // the selected element with a matching cursor.
+      if (state.tool === "select") {
+        const selected = state.selectedId
+          ? state.elements.find((el) => el.id === state.selectedId)
+          : undefined;
+        const over = selected ? handleAt(selected, e.offsetX, e.offsetY) : null;
+        canvasEl.style.cursor = over ? HANDLE_CURSOR[over] : "";
+      } else if (state.tool === "arrow") {
+        // Preview which spot the initial click would start bound to.
+        const spot = nearestAnchor(state.elements, e.offsetX, e.offsetY);
+        setActiveAnchor(spot ? { elementId: spot.elementId, side: spot.side } : null);
+      }
+      return;
+    }
     const { x, y } = predictPointer(e);
     applyDrag(x, y);
   }
@@ -221,6 +341,21 @@ export default function Canvas() {
   function applyDrag(x: number, y: number) {
     if (!drag) return;
     const { original } = drag;
+
+    if (drag.handle) {
+      // Keep the reshaped point out of the left margin and the titlebar band,
+      // matching the move clamps, so a corner/endpoint can't be stranded.
+      const px = Math.max(x, 0);
+      const py = Math.max(y, TITLEBAR_HEIGHT);
+      // An arrow endpoint may snap onto (or off) a rectangle spot as it moves;
+      // rect corners just resize.
+      if (original.type === "arrow" && (drag.handle === "start" || drag.handle === "end")) {
+        placeArrowEndpoint(drag.id, drag.handle, px, py);
+      } else {
+        resizeElement(drag.id, original, drag.handle, px, py);
+      }
+      return;
+    }
 
     if (state.tool === "select") {
       // Don't let the element move past the left edge or up under the
@@ -249,7 +384,8 @@ export default function Canvas() {
         h: Math.abs(y - drag.startY),
       });
     } else if (original.type === "arrow") {
-      updateElement(drag.id, { x2: x, y2: y });
+      // The head follows the pointer and may lock onto a rectangle spot.
+      placeArrowEndpoint(drag.id, "end", x, y);
     }
   }
 
@@ -271,6 +407,9 @@ export default function Canvas() {
       }
     }
     drag = null;
+    // Stop showing attachment spots once the endpoint is dropped.
+    setPlacingEnd(false);
+    setActiveAnchor(null);
   }
 
   // Double-click a rect or arrow to edit its centered label. (Text elements

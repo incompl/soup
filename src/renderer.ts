@@ -5,7 +5,18 @@
 import rough from "roughjs";
 import type { RoughCanvas } from "roughjs/bin/canvas";
 import type { Options } from "roughjs/bin/core";
-import { FONT, FONT_SIZE, LINE_HEIGHT, measureText, type SceneElement } from "./scene";
+import {
+  ANCHOR_DOT_R,
+  elementHandles,
+  FONT,
+  FONT_SIZE,
+  HANDLE_SIZE,
+  LINE_HEIGHT,
+  measureText,
+  rectAnchors,
+  type AnchorSide,
+  type SceneElement,
+} from "./scene";
 
 const STROKE = "#1e1e1e";
 const SELECTION = "#f74f4f";
@@ -22,6 +33,18 @@ const SHAPE_OPTS: Options = {
   strokeWidth: 2,
   roughness: 1.1,
   bowing: 1.2,
+};
+
+// Arrows read badly with the full sketch treatment: roughjs's default
+// multi-stroke draws each line twice, and over a long straight shaft the two
+// passes visibly splay into a wedge, while bowing curves it. Keep a faint
+// hand-drawn wobble but disable the second stroke and the bowing so shafts stay
+// single and straight. The arrowhead shares these opts so it stays consistent.
+const ARROW_OPTS: Options = {
+  ...SHAPE_OPTS,
+  roughness: 0.8,
+  bowing: 0,
+  disableMultiStroke: true,
 };
 
 // One RoughCanvas per underlying <canvas>; cheap to reuse across renders.
@@ -56,7 +79,12 @@ export function renderScene(
   // the label (the textarea shows it) but still breaks the arrow shaft around
   // the live text, so the shaft never runs through what you're typing.
   editingLabelId: string | null = null,
-  editingLabelText = ""
+  editingLabelText = "",
+  // While an arrow endpoint is being placed (drawn or re-dragged), every
+  // rectangle shows its four attachment spots so the user can see where the
+  // endpoint will lock; activeAnchor is the one it would currently snap to.
+  showAnchors = false,
+  activeAnchor: { elementId: string; side: AnchorSide } | null = null
 ) {
   ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
   ctx.clearRect(0, 0, width, height);
@@ -68,6 +96,30 @@ export function renderScene(
 
   const selected = selectedId && elements.find((e) => e.id === selectedId);
   if (selected) drawSelection(ctx, selected);
+
+  if (showAnchors) drawAnchors(ctx, elements, activeAnchor);
+}
+
+// The attachment spots on every rectangle: hollow dots at each side midpoint,
+// with the one about to bind drawn filled and a touch larger.
+function drawAnchors(
+  ctx: CanvasRenderingContext2D,
+  elements: readonly SceneElement[],
+  active: { elementId: string; side: AnchorSide } | null
+) {
+  ctx.lineWidth = 1.5;
+  ctx.strokeStyle = SELECTION;
+  for (const el of elements) {
+    if (el.type !== "rect") continue;
+    for (const a of rectAnchors(el)) {
+      const isActive = !!active && active.elementId === el.id && active.side === a.side;
+      ctx.beginPath();
+      ctx.arc(a.x, a.y, isActive ? ANCHOR_DOT_R + 2 : ANCHOR_DOT_R, 0, Math.PI * 2);
+      ctx.fillStyle = isActive ? SELECTION : "#ffffff";
+      ctx.fill();
+      ctx.stroke();
+    }
+  }
 }
 
 function drawElement(
@@ -89,7 +141,7 @@ function drawElement(
       break;
     }
     case "arrow": {
-      const opts = { ...SHAPE_OPTS, seed: elementSeed(el.id) };
+      const opts = { ...ARROW_OPTS, seed: elementSeed(el.id) };
       // Break around the live text while editing, else the committed label.
       const breakText = editing ? editingText : el.label;
       const dx = el.x2 - el.x1;
@@ -181,4 +233,15 @@ function drawSelection(ctx: CanvasRenderingContext2D, el: SceneElement) {
   ctx.setLineDash([4, 4]);
   ctx.strokeRect(x - pad, y - pad, w + pad * 2, h + pad * 2);
   ctx.setLineDash([]);
+
+  // Resize handles: small white squares with a colored outline, centered on
+  // each corner (rect) or endpoint (arrow). Text elements return none.
+  const s = HANDLE_SIZE;
+  ctx.lineWidth = 1.5;
+  for (const hnd of elementHandles(el)) {
+    ctx.fillStyle = "#ffffff";
+    ctx.fillRect(hnd.x - s / 2, hnd.y - s / 2, s, s);
+    ctx.strokeStyle = SELECTION;
+    ctx.strokeRect(hnd.x - s / 2, hnd.y - s / 2, s, s);
+  }
 }
