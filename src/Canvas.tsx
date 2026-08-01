@@ -16,6 +16,28 @@ interface TextDraft {
   y: number;
 }
 
+// Editing the centered label of an existing rect/arrow (double-click). The
+// center + initial text are snapshotted at open; the element doesn't move
+// while its editor is up.
+interface LabelEdit {
+  id: string;
+  cx: number;
+  cy: number;
+  initial: string;
+}
+
+// Center point of a labelable element, where its label editor is anchored.
+function elementCenter(el: SceneElement): { cx: number; cy: number } {
+  switch (el.type) {
+    case "rect":
+      return { cx: el.x + el.w / 2, cy: el.y + el.h / 2 };
+    case "arrow":
+      return { cx: (el.x1 + el.x2) / 2, cy: (el.y1 + el.y2) / 2 };
+    case "text":
+      return { cx: el.x, cy: el.y };
+  }
+}
+
 // Pointer prediction: extrapolate the cursor one frame ahead by its
 // smoothed velocity to offset the event->present pipeline latency
 // (~2-3 frames between the OS cursor and canvas content). Clamped so
@@ -66,9 +88,14 @@ export default function Canvas() {
   let canvasEl!: HTMLCanvasElement;
   let containerEl!: HTMLDivElement;
   let textareaEl: HTMLTextAreaElement | undefined;
+  let labelEl: HTMLTextAreaElement | undefined;
 
   const [size, setSize] = createSignal({ w: 0, h: 0, dpr: 1 });
   const [textDraft, setTextDraft] = createSignal<TextDraft | null>(null);
+  const [labelEdit, setLabelEdit] = createSignal<LabelEdit | null>(null);
+  // Live text in the label editor, so the render effect can break the arrow
+  // shaft around what's being typed (not just the committed label).
+  const [labelText, setLabelText] = createSignal("");
 
   let drag: DragState | null = null;
   let lastSample: PointerSample | null = null;
@@ -92,7 +119,7 @@ export default function Canvas() {
     const { w, h, dpr } = size();
     const ctx = canvasEl.getContext("2d");
     if (!ctx || w === 0) return;
-    renderScene(ctx, state.elements, state.selectedId, w, h, dpr);
+    renderScene(ctx, state.elements, state.selectedId, w, h, dpr, labelEdit()?.id ?? null, labelText());
   });
 
   function onKeyDown(e: KeyboardEvent) {
@@ -126,6 +153,10 @@ export default function Canvas() {
 
   function onPointerDown(e: PointerEvent) {
     if (textDraft()) return; // Textarea blur handles the commit.
+    // A click that reaches the canvas is outside the label editor (clicks
+    // inside it hit the textarea — see .label-editor's stacking). Commit the
+    // label, then let this click do its normal thing: select, draw, deselect.
+    if (labelEdit()) commitLabel();
     canvasEl.setPointerCapture(e.pointerId);
     const { offsetX: x, offsetY: y } = e;
     lastSample = { x, y, t: e.timeStamp, vx: 0, vy: 0 };
@@ -242,6 +273,57 @@ export default function Canvas() {
     drag = null;
   }
 
+  // Double-click a rect or arrow to edit its centered label. (Text elements
+  // are edited by their own tool; arrows/rects otherwise have no text.)
+  function onDblClick(e: MouseEvent) {
+    const hit = elementAt(state.elements, e.offsetX, e.offsetY);
+    if (!hit || (hit.type !== "rect" && hit.type !== "arrow")) return;
+    drag = null; // The dbl-click's pointer events may have armed a drag.
+    select(hit.id);
+    const { cx, cy } = elementCenter(hit);
+    setLabelText(hit.label ?? "");
+    setLabelEdit({ id: hit.id, cx, cy, initial: hit.label ?? "" });
+    requestAnimationFrame(() => {
+      if (!labelEl) return;
+      labelEl.value = hit.label ?? "";
+      autosizeLabel();
+      labelEl.focus();
+      labelEl.select();
+    });
+  }
+
+  // Track the live text (so the arrow break follows it) and grow the editor to
+  // fit its content so it stays centered on the shape.
+  function onLabelInput() {
+    setLabelText(labelEl?.value ?? "");
+    autosizeLabel();
+  }
+
+  function autosizeLabel() {
+    const ta = labelEl;
+    if (!ta) return;
+    ta.style.height = "auto";
+    ta.style.width = "auto";
+    ta.style.height = `${ta.scrollHeight}px`;
+    ta.style.width = `${ta.scrollWidth}px`;
+  }
+
+  function commitLabel() {
+    const edit = labelEdit();
+    if (!edit) return;
+    const text = labelEl?.value.trim() ?? "";
+    // Store undefined (not "") for an empty label so it drops out of the
+    // saved document and the arrow shaft rejoins.
+    updateElement(edit.id, { label: text || undefined });
+    setLabelEdit(null);
+  }
+
+  function onLabelKeyDown(e: KeyboardEvent) {
+    // Enter inserts a line break (native textarea behavior); the label commits
+    // on blur / click-away. Escape discards, leaving the label as it was.
+    if (e.key === "Escape") setLabelEdit(null);
+  }
+
   function commitText() {
     const draft = textDraft();
     if (!draft) return;
@@ -295,6 +377,7 @@ export default function Canvas() {
         onPointerDown={onPointerDown}
         onPointerMove={onPointerMove}
         onPointerUp={onPointerUp}
+        onDblClick={onDblClick}
       />
       <Show when={textDraft()}>
         {(draft) => (
@@ -309,6 +392,24 @@ export default function Canvas() {
             }}
             onKeyDown={onTextKeyDown}
             onBlur={commitText}
+          />
+        )}
+      </Show>
+      <Show when={labelEdit()}>
+        {(edit) => (
+          <textarea
+            ref={labelEl}
+            class="label-editor"
+            rows={1}
+            style={{
+              left: `${edit().cx}px`,
+              top: `${edit().cy}px`,
+              font: FONT,
+              "line-height": `${LINE_HEIGHT}px`,
+            }}
+            onInput={onLabelInput}
+            onKeyDown={onLabelKeyDown}
+            onBlur={commitLabel}
           />
         )}
       </Show>

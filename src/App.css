@@ -130,3 +130,24 @@ body,
   color: #1e1e1e;
   resize: none;
 }
+
+/* Label editor for a rect/arrow, anchored on the shape's center point and
+   grown to fit its text (see autosizeLabel) so what you type lines up with
+   where it renders. */
+.label-editor {
+  position: absolute;
+  /* Above the canvas (z-index: 1) so clicks land on the text and place the
+     caret, instead of falling through to the canvas underneath. */
+  z-index: 6;
+  transform: translate(-50%, -50%);
+  margin: 0;
+  padding: 0;
+  border: none;
+  outline: none;
+  background: transparent;
+  color: #1e1e1e;
+  text-align: center;
+  white-space: pre;
+  overflow: hidden;
+  resize: none;
+}

@@ -12,6 +12,9 @@ export interface RectElement {
   y: number;
   w: number;
   h: number;
+  // Optional centered label. Absent (not "") when empty, so blank labels
+  // never hit the saved document — see commitLabel in Canvas.tsx.
+  label?: string;
 }
 
 export interface ArrowElement {
@@ -21,6 +24,10 @@ export interface ArrowElement {
   y1: number;
   x2: number;
   y2: number;
+  // Optional centered label. The shaft "breaks" around it while set, and
+  // rejoins once cleared. Absent (not "") when empty, so it stays out of the
+  // saved document — see commitLabel in Canvas.tsx.
+  label?: string;
 }
 
 export interface TextElement {
@@ -68,8 +75,24 @@ export function hitTest(el: SceneElement, px: number, py: number): boolean {
       return (
         px >= el.x - pad && px <= el.x + el.w + pad && py >= el.y - pad && py <= el.y + el.h + pad
       );
-    case "arrow":
-      return distToSegment(px, py, el.x1, el.y1, el.x2, el.y2) <= pad;
+    case "arrow": {
+      if (distToSegment(px, py, el.x1, el.y1, el.x2, el.y2) <= pad) return true;
+      // The label sits in the shaft's gap, off the line itself, so also treat
+      // its centered box as part of the arrow — clicking the text selects (and
+      // double-clicking edits) the arrow.
+      if (el.label) {
+        const { w, h } = measureText(el.label);
+        const cx = (el.x1 + el.x2) / 2;
+        const cy = (el.y1 + el.y2) / 2;
+        return (
+          px >= cx - w / 2 - pad &&
+          px <= cx + w / 2 + pad &&
+          py >= cy - h / 2 - pad &&
+          py <= cy + h / 2 + pad
+        );
+      }
+      return false;
+    }
     case "text": {
       const { w, h } = measureText(el.text);
       return px >= el.x - pad && px <= el.x + w + pad && py >= el.y - pad && py <= el.y + h + pad;
