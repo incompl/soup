@@ -1,15 +1,26 @@
 import { createEffect, createSignal, onCleanup, onMount, Show } from "solid-js";
 import { FONT, LINE_HEIGHT, newId, elementAt, handleAt, nearestAnchor, type AnchorSide, type HandlePos, type SceneElement } from "./scene";
 import { renderScene } from "./renderer";
-import { addElement, removeElement, select, setTool, state, updateElement } from "./store";
+import { initEditMenu } from "./edit-menu";
+import {
+  addElement,
+  removeElements,
+  select,
+  setTool,
+  state,
+  toggleSelect,
+  updateElement,
+  updateElements,
+} from "./store";
 
 interface DragState {
-  id: string;
   startX: number;
   startY: number;
-  // Snapshot of the element at drag start, for move deltas.
-  original: SceneElement;
-  // Set when the drag started on a resize handle: the element is being
+  // Snapshots of every element taking part in the drag, taken at drag start so
+  // move deltas are computed from a fixed origin. A move carries the whole
+  // selection (group move); a resize or a fresh draw carries a single element.
+  originals: SceneElement[];
+  // Set when the drag started on a resize handle: the (single) element is being
   // reshaped (corner/endpoint follows the pointer) rather than moved.
   handle?: HandlePos;
 }
@@ -63,6 +74,18 @@ function elementTop(el: SceneElement): number {
       return el.y;
     case "arrow":
       return Math.min(el.y1, el.y2);
+  }
+}
+
+// Patch that translates an element by (dx, dy), shaped to its type. Used to
+// move each member of a selection by the same delta in one store update.
+function movePatch(el: SceneElement, dx: number, dy: number): Partial<SceneElement> {
+  switch (el.type) {
+    case "rect":
+    case "text":
+      return { x: el.x + dx, y: el.y + dy };
+    case "arrow":
+      return { x1: el.x1 + dx, y1: el.y1 + dy, x2: el.x2 + dx, y2: el.y2 + dy };
   }
 }
 
@@ -143,6 +166,10 @@ export default function Canvas() {
 
     window.addEventListener("keydown", onKeyDown);
     onCleanup(() => window.removeEventListener("keydown", onKeyDown));
+
+    // Copy/cut/paste/select-all, from either the native Edit menu or their
+    // keyboard shortcuts.
+    onCleanup(initEditMenu());
   });
 
   createEffect(() => {
@@ -152,7 +179,7 @@ export default function Canvas() {
     renderScene(
       ctx,
       state.elements,
-      state.selectedId,
+      state.selectedIds,
       w,
       h,
       dpr,
@@ -186,7 +213,7 @@ export default function Canvas() {
         break;
       case "Delete":
       case "Backspace":
-        if (state.selectedId) removeElement(state.selectedId);
+        if (state.selectedIds.length) removeElements(state.selectedIds);
         break;
       case "Escape":
         select(null);
@@ -206,29 +233,45 @@ export default function Canvas() {
 
     switch (state.tool) {
       case "select": {
-        // Grabbing a resize handle of the already-selected element takes
+        // Resize handles belong to a lone selection; grabbing one takes
         // priority over selecting/moving whatever is underneath it.
-        const selected = state.selectedId
-          ? state.elements.find((el) => el.id === state.selectedId)
-          : undefined;
-        const grabbed = selected ? handleAt(selected, x, y) : null;
-        if (selected && grabbed) {
-          drag = { id: selected.id, startX: x, startY: y, original: { ...selected }, handle: grabbed };
+        const solo =
+          state.selectedIds.length === 1
+            ? state.elements.find((el) => el.id === state.selectedIds[0])
+            : undefined;
+        const grabbed = solo ? handleAt(solo, x, y) : null;
+        if (solo && grabbed) {
+          drag = { originals: [{ ...solo }], startX: x, startY: y, handle: grabbed };
           // Re-dragging an arrow endpoint can re-bind it, so light up the spots.
-          if (selected.type === "arrow" && (grabbed === "start" || grabbed === "end")) {
+          if (solo.type === "arrow" && (grabbed === "start" || grabbed === "end")) {
             setPlacingEnd(true);
           }
           break;
         }
         const hit = elementAt(state.elements, x, y);
-        select(hit?.id ?? null);
-        if (hit) drag = { id: hit.id, startX: x, startY: y, original: { ...hit } };
+        // Shift-click extends the selection without moving anything.
+        if (e.shiftKey) {
+          if (hit) toggleSelect(hit.id);
+          break;
+        }
+        // Clicking an already-selected element keeps the (possibly multi)
+        // selection so it can be dragged as a group; anything else replaces it.
+        if (!hit || !state.selectedIds.includes(hit.id)) {
+          select(hit?.id ?? null);
+        }
+        if (hit) {
+          const originals = state.selectedIds
+            .map((id) => state.elements.find((el) => el.id === id))
+            .filter((el): el is SceneElement => !!el)
+            .map((el) => ({ ...el }));
+          drag = { originals, startX: x, startY: y };
+        }
         break;
       }
       case "rect": {
         const el: SceneElement = { id: newId(), type: "rect", x, y, w: 0, h: 0 };
         addElement(el);
-        drag = { id: el.id, startX: x, startY: y, original: el };
+        drag = { originals: [el], startX: x, startY: y };
         break;
       }
       case "arrow": {
@@ -247,7 +290,7 @@ export default function Canvas() {
           startBinding: spot ? { elementId: spot.elementId, side: spot.side } : undefined,
         };
         addElement(el);
-        drag = { id: el.id, startX: x, startY: y, original: el };
+        drag = { originals: [el], startX: x, startY: y };
         break;
       }
       case "text":
@@ -322,10 +365,13 @@ export default function Canvas() {
       // Not dragging: reflect whether the pointer is over a resize handle of
       // the selected element with a matching cursor.
       if (state.tool === "select") {
-        const selected = state.selectedId
-          ? state.elements.find((el) => el.id === state.selectedId)
-          : undefined;
-        const over = selected ? handleAt(selected, e.offsetX, e.offsetY) : null;
+        // Handles only appear for a lone selection, so that's the only case a
+        // resize cursor applies.
+        const solo =
+          state.selectedIds.length === 1
+            ? state.elements.find((el) => el.id === state.selectedIds[0])
+            : undefined;
+        const over = solo ? handleAt(solo, e.offsetX, e.offsetY) : null;
         canvasEl.style.cursor = over ? HANDLE_CURSOR[over] : "";
       } else if (state.tool === "arrow") {
         // Preview which spot the initial click would start bound to.
@@ -340,9 +386,11 @@ export default function Canvas() {
 
   function applyDrag(x: number, y: number) {
     if (!drag) return;
-    const { original } = drag;
+    const { originals } = drag;
 
     if (drag.handle) {
+      // Resize/endpoint drags are always a single element.
+      const original = originals[0];
       // Keep the reshaped point out of the left margin and the titlebar band,
       // matching the move clamps, so a corner/endpoint can't be stranded.
       const px = Math.max(x, 0);
@@ -350,42 +398,32 @@ export default function Canvas() {
       // An arrow endpoint may snap onto (or off) a rectangle spot as it moves;
       // rect corners just resize.
       if (original.type === "arrow" && (drag.handle === "start" || drag.handle === "end")) {
-        placeArrowEndpoint(drag.id, drag.handle, px, py);
+        placeArrowEndpoint(original.id, drag.handle, px, py);
       } else {
-        resizeElement(drag.id, original, drag.handle, px, py);
+        resizeElement(original.id, original, drag.handle, px, py);
       }
       return;
     }
 
     if (state.tool === "select") {
-      // Don't let the element move past the left edge or up under the
-      // titlebar, where it would become unselectable.
-      const dx = Math.max(x - drag.startX, -elementLeft(original));
-      const dy = Math.max(y - drag.startY, TITLEBAR_HEIGHT - elementTop(original));
-      switch (original.type) {
-        case "rect":
-        case "text":
-          updateElement(drag.id, { x: original.x + dx, y: original.y + dy });
-          break;
-        case "arrow":
-          updateElement(drag.id, {
-            x1: original.x1 + dx,
-            y1: original.y1 + dy,
-            x2: original.x2 + dx,
-            y2: original.y2 + dy,
-          });
-          break;
-      }
-    } else if (original.type === "rect") {
-      updateElement(drag.id, {
+      // Move the whole selection by one delta. Clamp against the group's own
+      // leftmost/topmost member so nothing in it crosses the left edge or slips
+      // under the titlebar, where it would become unselectable.
+      const groupLeft = Math.min(...originals.map(elementLeft));
+      const groupTop = Math.min(...originals.map(elementTop));
+      const dx = Math.max(x - drag.startX, -groupLeft);
+      const dy = Math.max(y - drag.startY, TITLEBAR_HEIGHT - groupTop);
+      updateElements(originals.map((el) => ({ id: el.id, patch: movePatch(el, dx, dy) })));
+    } else if (originals[0].type === "rect") {
+      updateElement(originals[0].id, {
         x: Math.min(drag.startX, x),
         y: Math.min(drag.startY, y),
         w: Math.abs(x - drag.startX),
         h: Math.abs(y - drag.startY),
       });
-    } else if (original.type === "arrow") {
+    } else if (originals[0].type === "arrow") {
       // The head follows the pointer and may lock onto a rectangle spot.
-      placeArrowEndpoint(drag.id, "end", x, y);
+      placeArrowEndpoint(originals[0].id, "end", x, y);
     }
   }
 
@@ -393,14 +431,14 @@ export default function Canvas() {
     if (!drag) return;
     // Settle at the last true pointer position, dropping any prediction.
     if (lastSample) applyDrag(lastSample.x, lastSample.y);
-    const el = state.elements.find((e) => e.id === drag!.id);
+    const el = state.elements.find((e) => e.id === drag!.originals[0].id);
     if (el && state.tool !== "select") {
       // Discard degenerate shapes from a click without a drag.
       const tooSmall =
         (el.type === "rect" && el.w < 4 && el.h < 4) ||
         (el.type === "arrow" && Math.hypot(el.x2 - el.x1, el.y2 - el.y1) < 4);
       if (tooSmall) {
-        removeElement(el.id);
+        removeElements([el.id]);
       } else {
         setTool("select");
         select(el.id);

@@ -115,6 +115,15 @@ fn build_menu<R: Runtime>(app: &AppHandle<R>) -> tauri::Result<(Menu<R>, Submenu
         ],
     )?;
 
+    // Cut/copy/paste/select-all are custom (not predefined) so their events
+    // reach the frontend, which owns the scene: the accelerators act on the
+    // selected *elements*, falling back to native text editing when a label/text
+    // editor is focused (see edit-menu.ts). Undo/redo stay predefined.
+    let cut = MenuItem::with_id(app, "cut", "Cut", true, Some("CmdOrCtrl+X"))?;
+    let copy = MenuItem::with_id(app, "copy", "Copy", true, Some("CmdOrCtrl+C"))?;
+    let paste = MenuItem::with_id(app, "paste", "Paste", true, Some("CmdOrCtrl+V"))?;
+    let select_all = MenuItem::with_id(app, "select-all", "Select All", true, Some("CmdOrCtrl+A"))?;
+
     let edit = Submenu::with_items(
         app,
         "Edit",
@@ -123,10 +132,10 @@ fn build_menu<R: Runtime>(app: &AppHandle<R>) -> tauri::Result<(Menu<R>, Submenu
             &PredefinedMenuItem::undo(app, None)?,
             &PredefinedMenuItem::redo(app, None)?,
             &PredefinedMenuItem::separator(app)?,
-            &PredefinedMenuItem::cut(app, None)?,
-            &PredefinedMenuItem::copy(app, None)?,
-            &PredefinedMenuItem::paste(app, None)?,
-            &PredefinedMenuItem::select_all(app, None)?,
+            &cut,
+            &copy,
+            &paste,
+            &select_all,
         ],
     )?;
 
@@ -172,6 +181,10 @@ pub fn run() {
                 "save" => drop(app.emit("menu:save", ())),
                 "save-as" => drop(app.emit("menu:save-as", ())),
                 "recent-clear" => drop(app.emit("menu:clear-recent", ())),
+                "cut" => drop(app.emit("menu:cut", ())),
+                "copy" => drop(app.emit("menu:copy", ())),
+                "paste" => drop(app.emit("menu:paste", ())),
+                "select-all" => drop(app.emit("menu:select-all", ())),
                 _ if id.starts_with("recent:") => {
                     drop(app.emit("menu:open-path", id["recent:".len()..].to_string()));
                 }

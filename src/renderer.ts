@@ -70,7 +70,7 @@ function elementSeed(id: string): number {
 export function renderScene(
   ctx: CanvasRenderingContext2D,
   elements: readonly SceneElement[],
-  selectedId: string | null,
+  selectedIds: readonly string[],
   width: number,
   height: number,
   dpr: number,
@@ -94,8 +94,11 @@ export function renderScene(
     drawElement(ctx, rc, el, el.id === editingLabelId ? editingLabelText : null);
   }
 
-  const selected = selectedId && elements.find((e) => e.id === selectedId);
-  if (selected) drawSelection(ctx, selected);
+  // Outline every selected element; only show resize handles when exactly one
+  // is selected (dragging a corner/endpoint is a single-element gesture — a
+  // multi-selection just moves as a group).
+  const selected = elements.filter((e) => selectedIds.includes(e.id));
+  for (const el of selected) drawSelection(ctx, el, selected.length === 1);
 
   if (showAnchors) drawAnchors(ctx, elements, activeAnchor);
 }
@@ -208,7 +211,7 @@ function drawLabel(ctx: CanvasRenderingContext2D, text: string, cx: number, cy: 
   ctx.textBaseline = "alphabetic";
 }
 
-function drawSelection(ctx: CanvasRenderingContext2D, el: SceneElement) {
+function drawSelection(ctx: CanvasRenderingContext2D, el: SceneElement, withHandles: boolean) {
   let x: number, y: number, w: number, h: number;
   switch (el.type) {
     case "rect":
@@ -233,6 +236,8 @@ function drawSelection(ctx: CanvasRenderingContext2D, el: SceneElement) {
   ctx.setLineDash([4, 4]);
   ctx.strokeRect(x - pad, y - pad, w + pad * 2, h + pad * 2);
   ctx.setLineDash([]);
+
+  if (!withHandles) return;
 
   // Resize handles: small white squares with a colored outline, centered on
   // each corner (rect) or endpoint (arrow). Text elements return none.
