@@ -16,6 +16,52 @@ interface TextDraft {
   y: number;
 }
 
+// Pointer prediction: extrapolate the cursor one frame ahead by its
+// smoothed velocity to offset the event->present pipeline latency
+// (~2-3 frames between the OS cursor and canvas content). Clamped so
+// direction changes don't visibly overshoot. Toggle with "p" to A/B.
+const PREDICT_MS = 16;
+const PREDICT_MAX_PX = 12;
+const VELOCITY_BLEND = 0.4;
+
+// The draggable ".titlebar" strip (see App.css) sits above the canvas and
+// swallows pointer events in the top band. An element moved entirely under
+// it can never be clicked again, so clamp moves to keep an element's top at
+// or below this edge, leaving it fully selectable.
+const TITLEBAR_HEIGHT = 28;
+
+// Topmost y of an element, used to clamp how far up it can be moved.
+function elementTop(el: SceneElement): number {
+  switch (el.type) {
+    case "rect":
+    case "text":
+      return el.y;
+    case "arrow":
+      return Math.min(el.y1, el.y2);
+  }
+}
+
+// Leftmost x of an element. An element moved past the left window edge is
+// stranded off-canvas with no way to reveal it, so moves clamp to keep this
+// at or right of x = 0.
+function elementLeft(el: SceneElement): number {
+  switch (el.type) {
+    case "rect":
+    case "text":
+      return el.x;
+    case "arrow":
+      return Math.min(el.x1, el.x2);
+  }
+}
+
+interface PointerSample {
+  x: number;
+  y: number;
+  t: number;
+  vx: number;
+  vy: number;
+}
+
 export default function Canvas() {
   let canvasEl!: HTMLCanvasElement;
   let containerEl!: HTMLDivElement;
@@ -25,6 +71,7 @@ export default function Canvas() {
   const [textDraft, setTextDraft] = createSignal<TextDraft | null>(null);
 
   let drag: DragState | null = null;
+  let lastSample: PointerSample | null = null;
 
   onMount(() => {
     const observer = new ResizeObserver(() => {
@@ -81,6 +128,7 @@ export default function Canvas() {
     if (textDraft()) return; // Textarea blur handles the commit.
     canvasEl.setPointerCapture(e.pointerId);
     const { offsetX: x, offsetY: y } = e;
+    lastSample = { x, y, t: e.timeStamp, vx: 0, vy: 0 };
 
     switch (state.tool) {
       case "select": {
@@ -111,14 +159,43 @@ export default function Canvas() {
     }
   }
 
+  function predictPointer(e: PointerEvent): { x: number; y: number } {
+    const { offsetX: x, offsetY: y } = e;
+    const prev = lastSample;
+    const t = e.timeStamp;
+    const dt = prev ? t - prev.t : 0;
+    if (!prev || dt <= 0) {
+      lastSample = { x, y, t, vx: 0, vy: 0 };
+      return { x, y };
+    }
+    const vx = prev.vx + ((x - prev.x) / dt - prev.vx) * VELOCITY_BLEND;
+    const vy = prev.vy + ((y - prev.y) / dt - prev.vy) * VELOCITY_BLEND;
+    lastSample = { x, y, t, vx, vy };
+    let px = vx * PREDICT_MS;
+    let py = vy * PREDICT_MS;
+    const len = Math.hypot(px, py);
+    if (len > PREDICT_MAX_PX) {
+      px *= PREDICT_MAX_PX / len;
+      py *= PREDICT_MAX_PX / len;
+    }
+    return { x: x + px, y: y + py };
+  }
+
   function onPointerMove(e: PointerEvent) {
     if (!drag) return;
-    const { offsetX: x, offsetY: y } = e;
+    const { x, y } = predictPointer(e);
+    applyDrag(x, y);
+  }
+
+  function applyDrag(x: number, y: number) {
+    if (!drag) return;
     const { original } = drag;
 
     if (state.tool === "select") {
-      const dx = x - drag.startX;
-      const dy = y - drag.startY;
+      // Don't let the element move past the left edge or up under the
+      // titlebar, where it would become unselectable.
+      const dx = Math.max(x - drag.startX, -elementLeft(original));
+      const dy = Math.max(y - drag.startY, TITLEBAR_HEIGHT - elementTop(original));
       switch (original.type) {
         case "rect":
         case "text":
@@ -147,6 +224,8 @@ export default function Canvas() {
 
   function onPointerUp() {
     if (!drag) return;
+    // Settle at the last true pointer position, dropping any prediction.
+    if (lastSample) applyDrag(lastSample.x, lastSample.y);
     const el = state.elements.find((e) => e.id === drag!.id);
     if (el && state.tool !== "select") {
       // Discard degenerate shapes from a click without a drag.
@@ -192,6 +271,25 @@ export default function Canvas() {
       class="canvas-container"
       data-tool={state.tool}
     >
+      <svg class="coffee-stain" viewBox="0 0 100 100" aria-hidden="true">
+        <defs>
+          {/* Turbulence + displacement roughens the otherwise-smooth ring
+              into an organic, uneven coffee edge. */}
+          <filter id="coffee-rough">
+            <feTurbulence type="fractalNoise" baseFrequency="0.06" numOctaves="2" seed="7" result="noise" />
+            <feDisplacementMap in="SourceGraphic" in2="noise" scale="5.5" />
+          </filter>
+        </defs>
+        <g filter="url(#coffee-rough)">
+          <path
+            fill="none"
+            stroke="#5a3a24"
+            stroke-width="3.5"
+            stroke-opacity="0.75"
+            d="M49 20c17-1 30 5 30 25s-11 33-29 33-30-13-30-31c0-16 10-24 21-26"
+          />
+        </g>
+      </svg>
       <canvas
         ref={canvasEl}
         onPointerDown={onPointerDown}

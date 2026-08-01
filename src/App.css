@@ -19,7 +19,28 @@ body,
 .canvas-container {
   position: absolute;
   inset: 0;
-  background: #fafaf8;
+  background-color: #fafaf8;
+  /* Field Notes–style dot grid. A single radial-gradient tile repeated
+     across the surface; the dot sits at the top-left of each cell. */
+  background-image: radial-gradient(#d8d6cc 1.2px, transparent 1.4px);
+  background-size: 24px 24px;
+  background-position: 12px 12px;
+}
+
+/* Decorative coffee stain. Sits mostly off the top-left corner so it just
+   peeks into view around the traffic-light buttons. Below the drawing
+   canvas (which is transparent), and never intercepts pointer events. */
+.coffee-stain {
+  position: absolute;
+  top: -500px;
+  left: -320px;
+  width: 720px;
+  height: 720px;
+  pointer-events: none;
+  user-select: none;
+  opacity: 0.5;
+  z-index: 0;
+  transform: rotate(45deg);
 }
 
 /* Draggable strip standing in for the native title bar. Sits above the
@@ -39,6 +60,9 @@ body,
   width: 100%;
   height: 100%;
   touch-action: none;
+  /* Above the decorative coffee stain (z-index: 0) so drawings sit on top. */
+  position: relative;
+  z-index: 1;
 }
 
 .canvas-container[data-tool="rect"] canvas,
@@ -68,11 +92,20 @@ body,
 .toolbar button {
   border: none;
   background: transparent;
-  padding: 6px 12px;
+  padding: 8px;
   border-radius: 7px;
-  font-size: 13px;
   cursor: pointer;
   color: #1e1e1e;
+}
+
+.rough-icon {
+  display: block;
+}
+
+.rough-icon svg {
+  display: block;
+  width: 20px;
+  height: 20px;
 }
 
 .toolbar button:hover {
@@ -80,8 +113,8 @@ body,
 }
 
 .toolbar button.active {
-  background: #e3edfd;
-  color: #2b5fc7;
+  background: #fdeaea;
+  color: #c72b2b;
 }
 
 .text-editor {
@@ -90,7 +123,7 @@ body,
   min-height: 28px;
   margin: 0;
   padding: 2px;
-  border: 1px dashed #4f8ef7;
+  border: 1px dashed #f74f4f;
   border-radius: 2px;
   outline: none;
   background: transparent;

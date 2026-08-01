@@ -1,0 +1,38 @@
+/* Upper-left toast stack. Sits above everything and never eats clicks so the
+   canvas underneath stays fully interactive while a message is showing. */
+.notifications {
+  position: absolute;
+  top: 40px;
+  left: 12px;
+  z-index: 20;
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  pointer-events: none;
+}
+
+.notification {
+  padding: 7px 12px;
+  border-radius: 8px;
+  background: #1e1e1e;
+  color: #fff;
+  font-size: 13px;
+  font-weight: 500;
+  box-shadow: 0 2px 8px rgba(0, 0, 0, 0.18);
+  /* Appear instantly at full opacity; only the fade-out is animated — a long,
+     slow alpha fade (matches FADE_MS in notification-store.ts). */
+  opacity: 1;
+  transition: opacity 500ms ease-out;
+}
+
+.notification.success {
+  background: #2e8b4f;
+}
+
+.notification.error {
+  background: #c72b2b;
+}
+
+.notification.leaving {
+  opacity: 0;
+}

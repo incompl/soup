@@ -12,13 +12,17 @@
   },
   "license": "MIT",
   "dependencies": {
-    "solid-js": "^1.9.3",
-    "@tauri-apps/api": "^2"
+    "@tauri-apps/api": "^2",
+    "@tauri-apps/plugin-dialog": "^2.7.2",
+    "roughjs": "^4.6.6",
+    "solid-js": "^1.9.3"
   },
   "devDependencies": {
+    "@iconify-json/lucide": "^1.2.121",
+    "@tauri-apps/cli": "^2",
     "typescript": "~5.6.2",
+    "unplugin-icons": "^23.0.1",
     "vite": "^6.0.3",
-    "vite-plugin-solid": "^2.11.0",
-    "@tauri-apps/cli": "^2"
+    "vite-plugin-solid": "^2.11.0"
   }
 }
