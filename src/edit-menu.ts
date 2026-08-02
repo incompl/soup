@@ -12,9 +12,9 @@
 
 import { listen, type UnlistenFn } from "@tauri-apps/api/event";
 import { copySelection, cutSelection, paste } from "./clipboard";
-import { selectAll } from "./store";
+import { redo, selectAll, undo } from "./store";
 
-type EditAction = "copy" | "cut" | "paste" | "select-all";
+type EditAction = "copy" | "cut" | "paste" | "select-all" | "undo" | "redo";
 
 function focusedTextField(): HTMLTextAreaElement | HTMLInputElement | null {
   const el = document.activeElement;
@@ -36,6 +36,12 @@ function runOnCanvas(action: EditAction) {
     case "select-all":
       selectAll();
       break;
+    case "undo":
+      undo();
+      break;
+    case "redo":
+      redo();
+      break;
   }
 }
 
@@ -47,7 +53,8 @@ function runOnTextField(action: EditAction, field: HTMLTextAreaElement | HTMLInp
     field.select();
   } else {
     // execCommand is deprecated on the web but remains the reliable way to
-    // drive the focused editable's clipboard inside the Tauri webview.
+    // drive the focused editable's clipboard (and its native undo/redo) inside
+    // the Tauri webview.
     document.execCommand(action);
   }
 }
@@ -74,6 +81,12 @@ function acceleratorAction(e: KeyboardEvent): EditAction | null {
       return "paste";
     case "a":
       return "select-all";
+    case "z":
+      // Cmd/Ctrl+Z undoes; Shift adds redo (the mac convention).
+      return e.shiftKey ? "redo" : "undo";
+    case "y":
+      // Windows/Linux redo.
+      return e.shiftKey ? null : "redo";
     default:
       return null;
   }
@@ -93,7 +106,7 @@ export function initEditMenu(): () => void {
   window.addEventListener("keydown", onKeyDown);
 
   const unlisten: UnlistenFn[] = [];
-  const actions: EditAction[] = ["copy", "cut", "paste", "select-all"];
+  const actions: EditAction[] = ["copy", "cut", "paste", "select-all", "undo", "redo"];
   for (const action of actions) {
     // No Tauri backend under `pnpm dev` — listen() rejects; ignore it there.
     listen(`menu:${action}`, () => dispatch(action))

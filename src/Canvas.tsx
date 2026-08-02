@@ -6,6 +6,8 @@ import { settings } from "./settings-store";
 import { toolForKey } from "./shortcuts";
 import {
   addElement,
+  beginHistory,
+  commitHistory,
   removeElements,
   select,
   selectMany,
@@ -276,6 +278,7 @@ export default function Canvas() {
             : undefined;
         const grabbed = solo ? handleAt(solo, x, y) : null;
         if (solo && grabbed) {
+          beginHistory();
           drag = { originals: [{ ...solo }], startX: x, startY: y, handle: grabbed };
           // Re-dragging an arrow endpoint can re-bind it, so light up the spots.
           if (solo.type === "arrow" && (grabbed === "start" || grabbed === "end")) {
@@ -308,6 +311,7 @@ export default function Canvas() {
         if (!alreadySelected) {
           select(hit.id);
         }
+        beginHistory();
         const originals = state.selectedIds
           .map((id) => state.elements.find((el) => el.id === id))
           .filter((el): el is SceneElement => !!el)
@@ -321,6 +325,7 @@ export default function Canvas() {
         break;
       }
       case "rect": {
+        beginHistory();
         const el: SceneElement = { id: newId(), type: "rect", x, y, w: 0, h: 0 };
         addElement(el);
         drag = { originals: [el], startX: x, startY: y };
@@ -329,6 +334,7 @@ export default function Canvas() {
       case "arrow": {
         // A new arrow can start bound: if the press lands on a spot, anchor its
         // tail there, otherwise start free at the pointer.
+        beginHistory();
         const spot = nearestAnchor(state.elements, x, y);
         setPlacingEnd(true);
         setActiveAnchor(spot ? { elementId: spot.elementId, side: spot.side } : null);
@@ -520,6 +526,9 @@ export default function Canvas() {
       }
     }
     drag = null;
+    // Seal the whole drag/draw as one undo step (a click that drew nothing —
+    // e.g. a discarded degenerate shape — changes nothing, so nothing is added).
+    commitHistory();
     // Stop showing attachment spots once the endpoint is dropped.
     setPlacingEnd(false);
     setActiveAnchor(null);
@@ -534,6 +543,9 @@ export default function Canvas() {
 
     if (hit.type === "text") {
       select(hit.id);
+      // Bracket the whole edit: the per-keystroke writes (onTextInput) are
+      // suppressed until commitText seals one undo step.
+      beginHistory();
       setTextDraft({ x: hit.x, y: hit.y, id: hit.id });
       requestAnimationFrame(() => {
         if (!textareaEl) return;
@@ -601,11 +613,10 @@ export default function Canvas() {
   // thus any arrows bound to it) tracks what you're typing, instead of jumping
   // only on commit. Empty is fine here; commitText handles the empty-delete.
   //
-  // FUTURE (undo): these per-keystroke writes are transient, like the
-  // per-pointermove writes in applyDrag. When an undo stack lands, route both
-  // through a history-skipping store path (e.g. updateElement(id, patch,
-  // { history: false })) and seal a single entry at the gesture boundary
-  // (commitText here, onPointerUp for drags) — one edit should be one undo.
+  // These per-keystroke writes are transient, like applyDrag's per-pointermove
+  // writes: the edit is bracketed by beginHistory (onDblClick) / commitHistory
+  // (commitText), so store recording is suppressed here and the whole edit seals
+  // as one undo step — one edit is one undo.
   function onTextInput() {
     autosizeText();
     const draft = textDraft();
@@ -638,6 +649,9 @@ export default function Canvas() {
       setTool("select");
       select(el.id);
     }
+    // Seals the edit-existing-text gesture opened in onDblClick (a no-op for a
+    // freshly created text element, which recorded itself via addElement above).
+    commitHistory();
     setTextDraft(null);
   }
 

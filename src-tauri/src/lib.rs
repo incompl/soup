@@ -153,10 +153,12 @@ fn build_menu<R: Runtime>(app: &AppHandle<R>) -> tauri::Result<(Menu<R>, Submenu
         ],
     )?;
 
-    // Cut/copy/paste/select-all are custom (not predefined) so their events
-    // reach the frontend, which owns the scene: the accelerators act on the
-    // selected *elements*, falling back to native text editing when a label/text
-    // editor is focused (see edit-menu.ts). Undo/redo stay predefined.
+    // Undo/redo and cut/copy/paste/select-all are custom (not predefined) so
+    // their events reach the frontend, which owns the scene: the accelerators
+    // act on the selected *elements* (and the scene history), falling back to
+    // native text editing when a label/text editor is focused (see edit-menu.ts).
+    let undo = MenuItem::with_id(app, "undo", "Undo", true, Some("CmdOrCtrl+Z"))?;
+    let redo = MenuItem::with_id(app, "redo", "Redo", true, Some("CmdOrCtrl+Shift+Z"))?;
     let cut = MenuItem::with_id(app, "cut", "Cut", true, Some("CmdOrCtrl+X"))?;
     let copy = MenuItem::with_id(app, "copy", "Copy", true, Some("CmdOrCtrl+C"))?;
     let paste = MenuItem::with_id(app, "paste", "Paste", true, Some("CmdOrCtrl+V"))?;
@@ -167,8 +169,8 @@ fn build_menu<R: Runtime>(app: &AppHandle<R>) -> tauri::Result<(Menu<R>, Submenu
         "Edit",
         true,
         &[
-            &PredefinedMenuItem::undo(app, None)?,
-            &PredefinedMenuItem::redo(app, None)?,
+            &undo,
+            &redo,
             &PredefinedMenuItem::separator(app)?,
             &cut,
             &copy,
@@ -247,6 +249,8 @@ pub fn run() {
                 "save" => drop(app.emit("menu:save", ())),
                 "save-as" => drop(app.emit("menu:save-as", ())),
                 "recent-clear" => drop(app.emit("menu:clear-recent", ())),
+                "undo" => drop(app.emit("menu:undo", ())),
+                "redo" => drop(app.emit("menu:redo", ())),
                 "cut" => drop(app.emit("menu:cut", ())),
                 "copy" => drop(app.emit("menu:copy", ())),
                 "paste" => drop(app.emit("menu:paste", ())),
