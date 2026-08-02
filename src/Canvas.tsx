@@ -259,6 +259,18 @@ export default function Canvas() {
       case "Escape":
         select(null);
         break;
+      case "Enter": {
+        // Enter on a lone selection starts editing its text — the same as
+        // double-clicking it. rect/arrow edit a centered label; text edits the
+        // text. beginEdit ignores other types.
+        if (state.selectedIds.length !== 1) break;
+        const sel = state.elements.find((el) => el.id === state.selectedIds[0]);
+        if (sel) {
+          e.preventDefault(); // Don't let Enter also land in the editor we open.
+          beginEdit(sel);
+        }
+        break;
+      }
     }
   }
 
@@ -544,7 +556,12 @@ export default function Canvas() {
     const hit = elementAt(state.elements, e.offsetX, e.offsetY);
     if (!hit) return;
     drag = null; // The dbl-click's pointer events may have armed a drag.
+    beginEdit(hit);
+  }
 
+  // Start entering text into an element — its centered label (rect/arrow) or the
+  // text itself (text element). Shared by double-click and the Enter shortcut.
+  function beginEdit(hit: SceneElement) {
     if (hit.type === "text") {
       select(hit.id);
       // Bracket the whole edit: the per-keystroke writes (onTextInput) are
@@ -573,7 +590,9 @@ export default function Canvas() {
       labelEl.value = hit.label ?? "";
       autosizeLabel();
       labelEl.focus();
-      labelEl.select();
+      // Caret at the end so typing appends, matching the text editor above.
+      const end = labelEl.value.length;
+      labelEl.setSelectionRange(end, end);
     });
   }
 
@@ -604,12 +623,14 @@ export default function Canvas() {
   }
 
   function onLabelKeyDown(e: KeyboardEvent) {
-    // Enter inserts a line break (native textarea behavior); the label commits
-    // on blur / click-away. Escape also commits (keeping what you typed) and
-    // clears the selection.
-    if (e.key !== "Escape") return;
-    commitLabel();
-    select(null);
+    // Enter commits the label (Shift+Enter inserts a line break — the native
+    // textarea behavior we let through). Escape also commits (keeping what you
+    // typed). Both then clear the selection.
+    if (e.key === "Escape" || (e.key === "Enter" && !e.shiftKey)) {
+      e.preventDefault();
+      commitLabel();
+      select(null);
+    }
   }
 
   // On each keystroke, grow the editor to fit and — when editing an existing
@@ -660,10 +681,10 @@ export default function Canvas() {
   }
 
   function onTextKeyDown(e: KeyboardEvent) {
-    // Enter inserts a line break (native textarea behavior); the text commits
-    // on blur / click-away, matching the rect/arrow label editor. Escape also
-    // commits (keeping what you typed) and clears the selection.
-    if (e.key === "Escape") {
+    // Enter commits the text (Shift+Enter inserts a line break — the native
+    // textarea behavior we let through), matching the rect/arrow label editor.
+    // Escape also commits (keeping what you typed). Both then clear selection.
+    if (e.key === "Escape" || (e.key === "Enter" && !e.shiftKey)) {
       e.preventDefault();
       commitText();
       select(null);
