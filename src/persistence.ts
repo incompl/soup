@@ -62,6 +62,15 @@ function baseName(path: string): string {
   return path.split(/[\\/]/).pop() || path;
 }
 
+// A default filename for an export ("Diagram.png"), derived from the open
+// document so an exported PNG/SVG sits next to its `.soup` source with a
+// matching stem. Falls back to "Untitled" for a never-saved document.
+export function suggestedExportName(ext: string): string {
+  const path = currentPath();
+  const stem = path ? baseName(path).replace(/\.soup$/i, "") : "Untitled";
+  return `${stem}.${ext}`;
+}
+
 // --- Recent files -----------------------------------------------------------
 
 function loadRecents(): string[] {

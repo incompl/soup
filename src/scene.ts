@@ -1,7 +1,6 @@
 // Scene model: plain serializable data with no rendering or DOM concerns.
-// This is the single source of truth. Future features (save/load, SVG
-// export, PDF export via the Rust side) serialize from these types, so
-// keep them JSON-friendly.
+// This is the single source of truth. Save/load and picture export (SVG/PNG)
+// all serialize from these types, so keep them JSON-friendly.
 
 export type Tool = "select" | "rect" | "arrow" | "text";
 

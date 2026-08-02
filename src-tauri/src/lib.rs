@@ -1,6 +1,7 @@
 // Thin shell by design: the scene model and editor live in the frontend.
 // This side grows only OS-boundary features (screenshots, clipboard
-// images, file dialogs/IO, SVG -> PDF conversion), exposed as commands.
+// images, file dialogs/IO), exposed as commands. Picture export (PNG/SVG) is
+// generated in the frontend; this side only writes the resulting bytes.
 
 use std::sync::Mutex;
 
@@ -30,6 +31,13 @@ fn read_document(path: String) -> Result<String, String> {
 #[tauri::command]
 fn write_document(path: String, contents: String) -> Result<(), String> {
     std::fs::write(&path, contents).map_err(|e| e.to_string())
+}
+
+// Write raw bytes to a dialog-chosen path — used by the PNG export, whose
+// payload is binary rather than text. SVG export reuses `write_document`.
+#[tauri::command]
+fn write_binary(path: String, bytes: Vec<u8>) -> Result<(), String> {
+    std::fs::write(&path, bytes).map_err(|e| e.to_string())
 }
 
 // Hand the frontend any file the app was launched to open, once and only once.
@@ -117,6 +125,13 @@ fn build_menu<R: Runtime>(app: &AppHandle<R>) -> tauri::Result<(Menu<R>, Submenu
     let save = MenuItem::with_id(app, "save", "Save", true, Some("CmdOrCtrl+S"))?;
     let save_as = MenuItem::with_id(app, "save-as", "Save As…", true, Some("CmdOrCtrl+Shift+S"))?;
 
+    // Export flattens the scene to a picture (PNG/SVG), as opposed to Save,
+    // which writes the lossless `.soup` document. Each item emits an event the
+    // frontend turns into a save dialog + write (see export.ts).
+    let export_png = MenuItem::with_id(app, "export-png", "PNG…", true, None::<&str>)?;
+    let export_svg = MenuItem::with_id(app, "export-svg", "SVG…", true, None::<&str>)?;
+    let export = Submenu::with_items(app, "Export", true, &[&export_png, &export_svg])?;
+
     let file = Submenu::with_items(
         app,
         "File",
@@ -128,6 +143,7 @@ fn build_menu<R: Runtime>(app: &AppHandle<R>) -> tauri::Result<(Menu<R>, Submenu
             &PredefinedMenuItem::separator(app)?,
             &save,
             &save_as,
+            &export,
             &PredefinedMenuItem::separator(app)?,
             &PredefinedMenuItem::close_window(app, None)?,
         ],
@@ -219,6 +235,7 @@ pub fn run() {
         .invoke_handler(tauri::generate_handler![
             read_document,
             write_document,
+            write_binary,
             take_pending_open,
             set_recent_files,
             read_settings,
@@ -248,6 +265,8 @@ pub fn run() {
                 "open" => drop(app.emit("menu:open", ())),
                 "save" => drop(app.emit("menu:save", ())),
                 "save-as" => drop(app.emit("menu:save-as", ())),
+                "export-png" => drop(app.emit("menu:export-png", ())),
+                "export-svg" => drop(app.emit("menu:export-svg", ())),
                 "recent-clear" => drop(app.emit("menu:clear-recent", ())),
                 "undo" => drop(app.emit("menu:undo", ())),
                 "redo" => drop(app.emit("menu:redo", ())),

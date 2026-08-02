@@ -1,6 +1,7 @@
 // Canvas 2D renderer: pure function of the scene, no state of its own.
-// A future SVG exporter will be a sibling of this file that walks the
-// same elements and emits markup instead of draw calls.
+// Its sibling src/export.ts walks the same elements and emits SVG markup
+// instead of draw calls, sharing the options and seeds exported below so the
+// two stay in lockstep.
 
 import rough from "roughjs";
 import type { RoughCanvas } from "roughjs/bin/canvas";
@@ -18,17 +19,21 @@ import {
   type SceneElement,
 } from "./scene";
 
-const STROKE = "#1e1e1e";
+// Shared with the SVG exporter (src/export.ts): it walks the same elements and
+// drives roughjs's SVG generator with these exact opts and seeds, so an export
+// matches the on-screen strokes pixel-for-pixel. Keep them the single source of
+// truth rather than re-deriving the look on the export side.
+export const STROKE = "#1e1e1e";
 const SELECTION = "#f74f4f";
-const ARROWHEAD_LEN = 12;
+export const ARROWHEAD_LEN = 12;
 // Clear space kept around a centered label: padding on the rect (nothing
 // really needs it there) and the half-gap the arrow shaft leaves for it.
-const LABEL_PAD = 6;
+export const LABEL_PAD = 6;
 
 // "Medium" sketch level for canvas shapes, matching the toolbar's hand-drawn
 // look. seed is set per-element (see elementSeed) so a shape stays stable
 // while it's dragged/resized instead of re-randomizing every frame.
-const SHAPE_OPTS: Options = {
+export const SHAPE_OPTS: Options = {
   stroke: STROKE,
   strokeWidth: 2,
   roughness: 1.1,
@@ -40,7 +45,7 @@ const SHAPE_OPTS: Options = {
 // passes visibly splay into a wedge, while bowing curves it. Keep a faint
 // hand-drawn wobble but disable the second stroke and the bowing so shafts stay
 // single and straight. The arrowhead shares these opts so it stays consistent.
-const ARROW_OPTS: Options = {
+export const ARROW_OPTS: Options = {
   ...SHAPE_OPTS,
   roughness: 0.8,
   bowing: 0,
@@ -60,8 +65,9 @@ function roughFor(ctx: CanvasRenderingContext2D): RoughCanvas {
 }
 
 // Stable small integer seed from an element id, so roughjs draws the same
-// jitter for a given shape every frame.
-function elementSeed(id: string): number {
+// jitter for a given shape every frame — and so the SVG/PNG export reproduces
+// that exact jitter instead of a fresh random one.
+export function elementSeed(id: string): number {
   let h = 0;
   for (let i = 0; i < id.length; i++) h = (h * 31 + id.charCodeAt(i)) | 0;
   return Math.abs(h) % 2 ** 31;
