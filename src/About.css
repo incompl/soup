@@ -1,0 +1,49 @@
+/* The About window fills its own native window (about.html); the OS title bar
+   supplies the chrome, so this is just the body. Reset the default margin/white
+   so no light border shows around the dark content. */
+html,
+body {
+  margin: 0;
+  background: #1e1e1e;
+}
+
+/* Centered stack filling the small native window. The small top padding nudges
+   the block down a couple px to optically center it: the text's line-box leading
+   otherwise makes it sit slightly high, leaving extra space below. */
+.about {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  gap: 6px;
+  min-height: 100vh;
+  padding-top: 4px;
+  box-sizing: border-box;
+  background: #1e1e1e;
+  color: #fff;
+  font-family: system-ui, sans-serif;
+  text-align: center;
+  user-select: none;
+}
+
+.about-title {
+  font-size: 17px;
+  font-weight: 600;
+}
+
+.about-tagline {
+  font-size: 13px;
+  color: #b8b8b8;
+}
+
+.about-link {
+  font-size: 13px;
+  /* Matches the toolbar's active-tool red (App.css). */
+  color: #ff5b5b;
+  text-decoration: none;
+  cursor: pointer;
+}
+
+.about-link:hover {
+  text-decoration: underline;
+}

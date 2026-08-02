@@ -207,6 +207,10 @@ fn build_menu<R: Runtime>(app: &AppHandle<R>) -> tauri::Result<(Menu<R>, Submenu
         ],
     )?;
 
+    // App-menu "About" opens the native About window (about.html)
+    // rather than the standard about panel, so the site can be a clickable link.
+    let about = MenuItem::with_id(app, "about", "About", true, None::<&str>)?;
+
     // App-menu "Settings…" (Cmd/Ctrl+,) opens the native Settings window.
     let settings = MenuItem::with_id(app, "settings", "Settings…", true, Some("CmdOrCtrl+,"))?;
 
@@ -220,7 +224,7 @@ fn build_menu<R: Runtime>(app: &AppHandle<R>) -> tauri::Result<(Menu<R>, Submenu
         "soup",
         true,
         &[
-            &PredefinedMenuItem::about(app, None, None)?,
+            &about,
             &acknowledgements,
             &PredefinedMenuItem::separator(app)?,
             &settings,
@@ -286,6 +290,34 @@ fn open_settings_window<R: Runtime>(app: &AppHandle<R>) -> tauri::Result<()> {
     Ok(())
 }
 
+// Open the About window, or just focus it if it's already open. Mirrors
+// `open_settings_window`: its content is the frontend's about.html shown in its
+// own small native window.
+fn open_about_window<R: Runtime>(app: &AppHandle<R>) -> tauri::Result<()> {
+    if let Some(win) = app.get_webview_window("about") {
+        win.show()?;
+        win.set_focus()?;
+        return Ok(());
+    }
+    let builder = WebviewWindowBuilder::new(app, "about", WebviewUrl::App("about.html".into()))
+        .title("About")
+        .inner_size(300.0, 180.0)
+        .resizable(false)
+        .maximizable(false)
+        .minimizable(false)
+        .center();
+    // Overlay (transparent) title bar with the title hidden, like the main
+    // window: the webview fills the whole window so the content centers across
+    // its full height rather than sitting below a solid title bar. The traffic
+    // lights float over the dark content.
+    #[cfg(target_os = "macos")]
+    let builder = builder
+        .title_bar_style(tauri::TitleBarStyle::Overlay)
+        .hidden_title(true);
+    builder.build()?;
+    Ok(())
+}
+
 // Buffer a `.soup` path for the frontend to open, and nudge it in case it's
 // already running (warm open). Called for both OS `Opened` events and argv.
 fn queue_open<R: Runtime>(app: &AppHandle<R>, path: String) {
@@ -297,6 +329,7 @@ fn queue_open<R: Runtime>(app: &AppHandle<R>, path: String) {
 pub fn run() {
     let app = tauri::Builder::default()
         .plugin(tauri_plugin_dialog::init())
+        .plugin(tauri_plugin_opener::init())
         .manage(PendingOpen::default())
         .invoke_handler(tauri::generate_handler![
             read_document,
@@ -327,6 +360,11 @@ pub fn run() {
                 "settings" => {
                     if let Err(e) = open_settings_window(app) {
                         eprintln!("failed to open settings window: {e}");
+                    }
+                }
+                "about" => {
+                    if let Err(e) = open_about_window(app) {
+                        eprintln!("failed to open about window: {e}");
                     }
                 }
                 "acknowledgements" => drop(app.emit("menu:acknowledgements", ())),

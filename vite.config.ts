@@ -10,13 +10,14 @@ const host = process.env.TAURI_DEV_HOST;
 export default defineConfig(async () => ({
   plugins: [solid(), Icons({ compiler: "solid" })],
 
-  // Two HTML entry points: the main canvas window and the standalone Settings
-  // window (opened natively from the app menu — see lib.rs).
+  // HTML entry points: the main canvas window and the standalone Settings and
+  // About windows (opened natively from the app menu — see lib.rs).
   build: {
     rollupOptions: {
       input: {
         main: fileURLToPath(new URL("index.html", import.meta.url)),
         settings: fileURLToPath(new URL("settings.html", import.meta.url)),
+        about: fileURLToPath(new URL("about.html", import.meta.url)),
       },
     },
   },
