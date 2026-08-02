@@ -125,6 +125,50 @@ export function elementAt(elements: readonly SceneElement[], px: number, py: num
   return null;
 }
 
+// Axis-aligned bounding box of an element. Shared by marquee selection; the
+// arrow box spans its endpoints, text its measured extent.
+export function elementBounds(el: SceneElement): { x: number; y: number; w: number; h: number } {
+  switch (el.type) {
+    case "rect":
+      return { x: el.x, y: el.y, w: el.w, h: el.h };
+    case "arrow":
+      return {
+        x: Math.min(el.x1, el.x2),
+        y: Math.min(el.y1, el.y2),
+        w: Math.abs(el.x2 - el.x1),
+        h: Math.abs(el.y2 - el.y1),
+      };
+    case "text": {
+      const { w, h } = measureText(el.text);
+      return { x: el.x, y: el.y, w, h };
+    }
+  }
+}
+
+// Ids of every element whose bounding box overlaps the rectangle given by two
+// opposite corners (a drag-to-select marquee). Any intersection counts, so an
+// element is caught the moment the box touches it.
+export function elementsInBox(
+  elements: readonly SceneElement[],
+  ax: number,
+  ay: number,
+  bx: number,
+  by: number
+): string[] {
+  const left = Math.min(ax, bx);
+  const right = Math.max(ax, bx);
+  const top = Math.min(ay, by);
+  const bottom = Math.max(ay, by);
+  const ids: string[] = [];
+  for (const el of elements) {
+    const b = elementBounds(el);
+    if (b.x <= right && b.x + b.w >= left && b.y <= bottom && b.y + b.h >= top) {
+      ids.push(el.id);
+    }
+  }
+  return ids;
+}
+
 // Resize handles for the selected element: a rect exposes its four corners,
 // an arrow its two endpoints. Text has none (it's sized by its content).
 // This is the single source of truth shared by the renderer (which draws the

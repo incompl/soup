@@ -84,7 +84,10 @@ export function renderScene(
   // rectangle shows its four attachment spots so the user can see where the
   // endpoint will lock; activeAnchor is the one it would currently snap to.
   showAnchors = false,
-  activeAnchor: { elementId: string; side: AnchorSide } | null = null
+  activeAnchor: { elementId: string; side: AnchorSide } | null = null,
+  // The drag-to-select marquee, given as two opposite corners, or null when no
+  // marquee drag is in progress.
+  marquee: { x0: number; y0: number; x1: number; y1: number } | null = null
 ) {
   ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
   ctx.clearRect(0, 0, width, height);
@@ -101,6 +104,27 @@ export function renderScene(
   for (const el of selected) drawSelection(ctx, el, selected.length === 1);
 
   if (showAnchors) drawAnchors(ctx, elements, activeAnchor);
+
+  if (marquee) drawMarquee(ctx, marquee);
+}
+
+// The drag-to-select marquee: a faint fill with a dashed outline in the
+// selection color, matching the per-element selection rectangles.
+function drawMarquee(
+  ctx: CanvasRenderingContext2D,
+  m: { x0: number; y0: number; x1: number; y1: number }
+) {
+  const x = Math.min(m.x0, m.x1);
+  const y = Math.min(m.y0, m.y1);
+  const w = Math.abs(m.x1 - m.x0);
+  const h = Math.abs(m.y1 - m.y0);
+  ctx.fillStyle = "rgba(247, 79, 79, 0.08)";
+  ctx.fillRect(x, y, w, h);
+  ctx.strokeStyle = SELECTION;
+  ctx.lineWidth = 1;
+  ctx.setLineDash([4, 4]);
+  ctx.strokeRect(x, y, w, h);
+  ctx.setLineDash([]);
 }
 
 // The attachment spots on every rectangle: hollow dots at each side midpoint,

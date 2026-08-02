@@ -1,11 +1,12 @@
 import { createEffect, createSignal, onCleanup, onMount, Show } from "solid-js";
-import { FONT, LINE_HEIGHT, newId, elementAt, handleAt, nearestAnchor, type AnchorSide, type HandlePos, type SceneElement } from "./scene";
+import { FONT, LINE_HEIGHT, newId, elementAt, elementsInBox, handleAt, nearestAnchor, type AnchorSide, type HandlePos, type SceneElement } from "./scene";
 import { renderScene } from "./renderer";
 import { initEditMenu } from "./edit-menu";
 import {
   addElement,
   removeElements,
   select,
+  selectMany,
   setTool,
   state,
   toggleSelect,
@@ -23,6 +24,11 @@ interface DragState {
   // Set when the drag started on a resize handle: the (single) element is being
   // reshaped (corner/endpoint follows the pointer) rather than moved.
   handle?: HandlePos;
+  // Set when the press landed on an element already part of a multi-selection.
+  // The mouse-down keeps the whole selection (so a group drag can start), but a
+  // plain click — down then up without a real drag — collapses to just this one
+  // on pointer-up, matching Figma/Sketch/Illustrator/etc.
+  collapseId?: string;
 }
 
 interface TextDraft {
@@ -59,6 +65,10 @@ function elementCenter(el: SceneElement): { cx: number; cy: number } {
 const PREDICT_MS = 16;
 const PREDICT_MAX_PX = 12;
 const VELOCITY_BLEND = 0.4;
+
+// A pointer that travels less than this between down and up counts as a click,
+// not a drag — the slack absorbs the tiny jitter of a physical press.
+const CLICK_SLOP_PX = 4;
 
 // The draggable ".titlebar" strip (see App.css) sits above the canvas and
 // swallows pointer events in the top band. An element moved entirely under
@@ -149,6 +159,17 @@ export default function Canvas() {
   // tracks the spot the endpoint would lock onto right now.
   const [placingEnd, setPlacingEnd] = createSignal(false);
   const [activeAnchor, setActiveAnchor] = createSignal<{ elementId: string; side: AnchorSide } | null>(null);
+  // The in-progress drag-to-select marquee: a fixed start corner (x0, y0) and
+  // the moving corner (x1, y1), plus the selection to union with (non-empty
+  // only for a shift-drag, which adds to what was already selected). Null when
+  // no marquee is being dragged.
+  const [marquee, setMarquee] = createSignal<{
+    x0: number;
+    y0: number;
+    x1: number;
+    y1: number;
+    base: string[];
+  } | null>(null);
 
   let drag: DragState | null = null;
   let lastSample: PointerSample | null = null;
@@ -188,7 +209,8 @@ export default function Canvas() {
       // Reveal attachment spots while placing an endpoint, and also whenever the
       // arrow tool is active so the initial click can start bound to a spot.
       placingEnd() || state.tool === "arrow",
-      activeAnchor()
+      activeAnchor(),
+      marquee()
     );
   });
 
@@ -249,23 +271,40 @@ export default function Canvas() {
           break;
         }
         const hit = elementAt(state.elements, x, y);
+        // Pressing empty space starts a drag-to-select marquee. A plain drag
+        // replaces the selection; a shift-drag adds to it (base = current
+        // selection). A press without a drag falls through to a plain click:
+        // clear on plain, keep on shift (both handled by the live update below,
+        // which selects nothing extra when the box is empty).
+        if (!hit) {
+          setMarquee({ x0: x, y0: y, x1: x, y1: y, base: e.shiftKey ? [...state.selectedIds] : [] });
+          if (!e.shiftKey) select(null);
+          break;
+        }
         // Shift-click extends the selection without moving anything.
         if (e.shiftKey) {
-          if (hit) toggleSelect(hit.id);
+          toggleSelect(hit.id);
           break;
         }
         // Clicking an already-selected element keeps the (possibly multi)
         // selection so it can be dragged as a group; anything else replaces it.
-        if (!hit || !state.selectedIds.includes(hit.id)) {
-          select(hit?.id ?? null);
+        // For a click that lands inside a multi-selection, defer collapsing to
+        // this one element until pointer-up (see collapseId), so the mouse-down
+        // can still begin a group drag.
+        const alreadySelected = state.selectedIds.includes(hit.id);
+        if (!alreadySelected) {
+          select(hit.id);
         }
-        if (hit) {
-          const originals = state.selectedIds
-            .map((id) => state.elements.find((el) => el.id === id))
-            .filter((el): el is SceneElement => !!el)
-            .map((el) => ({ ...el }));
-          drag = { originals, startX: x, startY: y };
-        }
+        const originals = state.selectedIds
+          .map((id) => state.elements.find((el) => el.id === id))
+          .filter((el): el is SceneElement => !!el)
+          .map((el) => ({ ...el }));
+        drag = {
+          originals,
+          startX: x,
+          startY: y,
+          collapseId: alreadySelected && state.selectedIds.length > 1 ? hit.id : undefined,
+        };
         break;
       }
       case "rect": {
@@ -361,6 +400,17 @@ export default function Canvas() {
   };
 
   function onPointerMove(e: PointerEvent) {
+    const m = marquee();
+    if (m) {
+      // Grow the box to the pointer and reselect live, so elements light up as
+      // the marquee sweeps over them. Union with the pre-drag selection for a
+      // shift-drag; replace it otherwise (base is empty).
+      const { offsetX: x, offsetY: y } = e;
+      setMarquee({ ...m, x1: x, y1: y });
+      const inBox = elementsInBox(state.elements, m.x0, m.y0, x, y);
+      selectMany([...new Set([...m.base, ...inBox])]);
+      return;
+    }
     if (!drag) {
       // Not dragging: reflect whether the pointer is over a resize handle of
       // the selected element with a matching cursor.
@@ -428,9 +478,21 @@ export default function Canvas() {
   }
 
   function onPointerUp() {
+    // A marquee owns the whole gesture: selection was applied live during the
+    // move, so dropping it just ends the marquee.
+    if (marquee()) {
+      setMarquee(null);
+      return;
+    }
     if (!drag) return;
     // Settle at the last true pointer position, dropping any prediction.
     if (lastSample) applyDrag(lastSample.x, lastSample.y);
+    // A plain click inside a multi-selection (no real drag) collapses to the
+    // one element pressed. A drag past the slop is a group move, so keep it.
+    if (drag.collapseId && lastSample) {
+      const moved = Math.hypot(lastSample.x - drag.startX, lastSample.y - drag.startY) > CLICK_SLOP_PX;
+      if (!moved) select(drag.collapseId);
+    }
     const el = state.elements.find((e) => e.id === drag!.originals[0].id);
     if (el && state.tool !== "select") {
       // Discard degenerate shapes from a click without a drag.
