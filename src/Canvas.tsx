@@ -1,5 +1,5 @@
 import { createEffect, createSignal, onCleanup, onMount, Show } from "solid-js";
-import { FONT, LINE_HEIGHT, newId, elementAt, elementsInBox, handleAt, nearestAnchor, type AnchorSide, type HandlePos, type SceneElement } from "./scene";
+import { FONT, FONT_SIZE, LINE_HEIGHT, newId, elementAt, elementsInBox, handleAt, nearestAnchor, type AnchorSide, type HandlePos, type SceneElement } from "./scene";
 import { renderScene } from "./renderer";
 import { initEditMenu } from "./edit-menu";
 import { settings } from "./settings-store";
@@ -36,6 +36,9 @@ interface DragState {
 interface TextDraft {
   x: number;
   y: number;
+  // Set when editing an existing text element (double-click) rather than
+  // placing a new one: commit updates this element instead of adding one.
+  id?: string;
 }
 
 // Editing the centered label of an existing rect/arrow (double-click). The
@@ -71,6 +74,22 @@ const VELOCITY_BLEND = 0.4;
 // A pointer that travels less than this between down and up counts as a click,
 // not a drag — the slack absorbs the tiny jitter of a physical press.
 const CLICK_SLOP_PX = 4;
+
+// The canvas paints a text element's first-line alphabetic baseline at
+// y + FONT_SIZE (see renderer drawElement), i.e. with no leading above it. A
+// textarea instead centers each line in a LINE_HEIGHT box, adding half-leading
+// above the first line, so its glyphs sit a hair lower. This nudges the editor
+// up by that exact difference — derived from the font's real ascent/descent so
+// it's font-agnostic — so editing text lands right where the canvas paints it.
+// (Every line follows, since both step by LINE_HEIGHT.)
+const TEXT_EDITOR_DY = (() => {
+  const ctx = document.createElement("canvas").getContext("2d")!;
+  ctx.font = FONT;
+  const m = ctx.measureText("Mg");
+  // Baseline offset from the top of the textarea's first line box.
+  const baselineFromTop = LINE_HEIGHT / 2 + (m.fontBoundingBoxAscent - m.fontBoundingBoxDescent) / 2;
+  return FONT_SIZE - baselineFromTop;
+})();
 
 // The draggable ".titlebar" strip (see App.css) sits above the canvas and
 // swallows pointer events in the top band. An element moved entirely under
@@ -157,8 +176,8 @@ export default function Canvas() {
   // shaft around what's being typed (not just the committed label).
   const [labelText, setLabelText] = createSignal("");
   // While an arrow endpoint is being placed (a new arrow drawn, or an existing
-  // end re-dragged), rectangles reveal their attachment spots and activeAnchor
-  // tracks the spot the endpoint would lock onto right now.
+  // end re-dragged), bindable elements reveal their attachment spots and
+  // activeAnchor tracks the spot the endpoint would lock onto right now.
   const [placingEnd, setPlacingEnd] = createSignal(false);
   const [activeAnchor, setActiveAnchor] = createSignal<{ elementId: string; side: AnchorSide } | null>(null);
   // The in-progress drag-to-select marquee: a fixed start corner (x0, y0) and
@@ -212,7 +231,8 @@ export default function Canvas() {
       // arrow tool is active so the initial click can start bound to a spot.
       placingEnd() || state.tool === "arrow",
       activeAnchor(),
-      marquee()
+      marquee(),
+      textDraft()?.id ?? null
     );
   });
 
@@ -505,12 +525,29 @@ export default function Canvas() {
     setActiveAnchor(null);
   }
 
-  // Double-click a rect or arrow to edit its centered label. (Text elements
-  // are edited by their own tool; arrows/rects otherwise have no text.)
+  // Double-click a text element to edit it in place, or a rect/arrow to edit
+  // its centered label.
   function onDblClick(e: MouseEvent) {
     const hit = elementAt(state.elements, e.offsetX, e.offsetY);
-    if (!hit || (hit.type !== "rect" && hit.type !== "arrow")) return;
+    if (!hit) return;
     drag = null; // The dbl-click's pointer events may have armed a drag.
+
+    if (hit.type === "text") {
+      select(hit.id);
+      setTextDraft({ x: hit.x, y: hit.y, id: hit.id });
+      requestAnimationFrame(() => {
+        if (!textareaEl) return;
+        textareaEl.value = hit.text;
+        autosizeText(); // fit all lines of the existing text
+        textareaEl.focus();
+        // Place the caret at the end so typing appends, rather than selecting
+        // all (which would replace the text on the first keystroke).
+        const end = hit.text.length;
+        textareaEl.setSelectionRange(end, end);
+      });
+      return;
+    }
+    if (hit.type !== "rect" && hit.type !== "arrow") return;
     select(hit.id);
     const { cx, cy } = elementCenter(hit);
     setLabelText(hit.label ?? "");
@@ -552,15 +589,50 @@ export default function Canvas() {
 
   function onLabelKeyDown(e: KeyboardEvent) {
     // Enter inserts a line break (native textarea behavior); the label commits
-    // on blur / click-away. Escape discards, leaving the label as it was.
-    if (e.key === "Escape") setLabelEdit(null);
+    // on blur / click-away. Escape also commits (keeping what you typed) and
+    // clears the selection.
+    if (e.key !== "Escape") return;
+    commitLabel();
+    select(null);
+  }
+
+  // On each keystroke, grow the editor to fit and — when editing an existing
+  // text element — push the live text into the store so its measured box (and
+  // thus any arrows bound to it) tracks what you're typing, instead of jumping
+  // only on commit. Empty is fine here; commitText handles the empty-delete.
+  //
+  // FUTURE (undo): these per-keystroke writes are transient, like the
+  // per-pointermove writes in applyDrag. When an undo stack lands, route both
+  // through a history-skipping store path (e.g. updateElement(id, patch,
+  // { history: false })) and seal a single entry at the gesture boundary
+  // (commitText here, onPointerUp for drags) — one edit should be one undo.
+  function onTextInput() {
+    autosizeText();
+    const draft = textDraft();
+    if (draft?.id) updateElement(draft.id, { text: textareaEl?.value ?? "" });
+  }
+
+  // Grow the borderless text editor to fit its content so every line (and long
+  // unwrapped lines — white-space: pre) stays visible as you type.
+  function autosizeText() {
+    const ta = textareaEl;
+    if (!ta) return;
+    ta.style.height = "auto";
+    ta.style.width = "auto";
+    ta.style.height = `${ta.scrollHeight}px`;
+    ta.style.width = `${ta.scrollWidth}px`;
   }
 
   function commitText() {
     const draft = textDraft();
     if (!draft) return;
     const text = textareaEl?.value.trimEnd() ?? "";
-    if (text) {
+    if (draft.id) {
+      // Editing an existing text element: save the new text, or delete the
+      // element if it was emptied.
+      if (text) updateElement(draft.id, { text });
+      else removeElements([draft.id]);
+    } else if (text) {
       const el: SceneElement = { id: newId(), type: "text", x: draft.x, y: draft.y, text };
       addElement(el);
       setTool("select");
@@ -570,12 +642,13 @@ export default function Canvas() {
   }
 
   function onTextKeyDown(e: KeyboardEvent) {
-    if (e.key === "Enter" && !e.shiftKey) {
+    // Enter inserts a line break (native textarea behavior); the text commits
+    // on blur / click-away, matching the rect/arrow label editor. Escape also
+    // commits (keeping what you typed) and clears the selection.
+    if (e.key === "Escape") {
       e.preventDefault();
       commitText();
-    } else if (e.key === "Escape") {
-      if (textareaEl) textareaEl.value = "";
-      setTextDraft(null);
+      select(null);
     }
   }
 
@@ -618,10 +691,17 @@ export default function Canvas() {
             class="text-editor"
             style={{
               left: `${draft().x}px`,
-              top: `${draft().y}px`,
+              top: `${draft().y + TEXT_EDITOR_DY}px`,
               font: FONT,
               "line-height": `${LINE_HEIGHT}px`,
+              // Show the selection border around the editor, drawn here (not on
+              // the canvas, which hides the element while its editor is up) so
+              // it hugs the textarea and grows with it as the text changes size.
+              // Offset 6px matches the canvas pad.
+              outline: "1px dashed #f74f4f",
+              "outline-offset": "6px",
             }}
+            onInput={onTextInput}
             onKeyDown={onTextKeyDown}
             onBlur={commitText}
           />

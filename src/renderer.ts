@@ -7,13 +7,13 @@ import type { RoughCanvas } from "roughjs/bin/canvas";
 import type { Options } from "roughjs/bin/core";
 import {
   ANCHOR_DOT_R,
+  elementAnchors,
   elementHandles,
   FONT,
   FONT_SIZE,
   HANDLE_SIZE,
   LINE_HEIGHT,
   measureText,
-  rectAnchors,
   type AnchorSide,
   type SceneElement,
 } from "./scene";
@@ -81,26 +81,30 @@ export function renderScene(
   editingLabelId: string | null = null,
   editingLabelText = "",
   // While an arrow endpoint is being placed (drawn or re-dragged), every
-  // rectangle shows its four attachment spots so the user can see where the
-  // endpoint will lock; activeAnchor is the one it would currently snap to.
+  // bindable element shows its four attachment spots so the user can see where
+  // the endpoint will lock; activeAnchor is the one it would currently snap to.
   showAnchors = false,
   activeAnchor: { elementId: string; side: AnchorSide } | null = null,
   // The drag-to-select marquee, given as two opposite corners, or null when no
   // marquee drag is in progress.
-  marquee: { x0: number; y0: number; x1: number; y1: number } | null = null
+  marquee: { x0: number; y0: number; x1: number; y1: number } | null = null,
+  // Text element being edited in a DOM textarea right now; skip painting it so
+  // the canvas text doesn't ghost behind the editor.
+  editingTextId: string | null = null
 ) {
   ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
   ctx.clearRect(0, 0, width, height);
 
   const rc = roughFor(ctx);
   for (const el of elements) {
+    if (el.id === editingTextId) continue;
     drawElement(ctx, rc, el, el.id === editingLabelId ? editingLabelText : null);
   }
 
   // Outline every selected element; only show resize handles when exactly one
   // is selected (dragging a corner/endpoint is a single-element gesture — a
   // multi-selection just moves as a group).
-  const selected = elements.filter((e) => selectedIds.includes(e.id));
+  const selected = elements.filter((e) => selectedIds.includes(e.id) && e.id !== editingTextId);
   for (const el of selected) drawSelection(ctx, el, selected.length === 1);
 
   if (showAnchors) drawAnchors(ctx, elements, activeAnchor);
@@ -127,8 +131,8 @@ function drawMarquee(
   ctx.setLineDash([]);
 }
 
-// The attachment spots on every rectangle: hollow dots at each side midpoint,
-// with the one about to bind drawn filled and a touch larger.
+// The attachment spots on every bindable element: hollow dots at each side
+// midpoint, with the one about to bind drawn filled and a touch larger.
 function drawAnchors(
   ctx: CanvasRenderingContext2D,
   elements: readonly SceneElement[],
@@ -137,8 +141,7 @@ function drawAnchors(
   ctx.lineWidth = 1.5;
   ctx.strokeStyle = SELECTION;
   for (const el of elements) {
-    if (el.type !== "rect") continue;
-    for (const a of rectAnchors(el)) {
+    for (const a of elementAnchors(el)) {
       const isActive = !!active && active.elementId === el.id && active.side === a.side;
       ctx.beginPath();
       ctx.arc(a.x, a.y, isActive ? ANCHOR_DOT_R + 2 : ANCHOR_DOT_R, 0, Math.PI * 2);

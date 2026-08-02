@@ -17,10 +17,10 @@ export interface RectElement {
   label?: string;
 }
 
-// One of a rectangle's four side-midpoint attachment spots. An arrow endpoint
+// One of an element's four side-midpoint attachment spots. An arrow endpoint
 // "locks" to a spot: the side is stored, but the actual coordinate is always
-// derived from the rectangle's current geometry (see boundEndpoint), so a
-// bound endpoint tracks the rectangle as it moves and resizes.
+// derived from the target's current geometry (see boundEndpoint), so a bound
+// endpoint tracks the target as it moves and resizes.
 export type AnchorSide = "top" | "right" | "bottom" | "left";
 
 export interface Binding {
@@ -217,11 +217,12 @@ export function handleAt(el: SceneElement, px: number, py: number): HandlePos | 
   return null;
 }
 
-// --- Arrow-to-rectangle bindings ---------------------------------------------
+// --- Arrow-to-element bindings -----------------------------------------------
 //
-// Each rectangle offers four attachment spots at its side midpoints. An arrow
-// endpoint snaps to a spot and lands a small gap outside the edge, so the
-// arrowhead/tail stops just short of the outline instead of overlapping it.
+// Any element with a rectangular footprint (rectangles and text) offers four
+// attachment spots at its side midpoints. An arrow endpoint snaps to a spot and
+// lands a small gap outside the edge, so the arrowhead/tail stops just short of
+// the outline instead of overlapping it.
 
 // Small clearance kept between a bound endpoint and the rectangle edge.
 export const BINDING_GAP = 6;
@@ -236,38 +237,60 @@ export interface Anchor {
   y: number;
 }
 
-// The four side-midpoint spots of a rectangle, where the binding dots are
-// drawn and where endpoints snap. This is the single source of truth shared by
-// the renderer (which draws the dots) and Canvas snapping, so they never drift.
-export function rectAnchors(rect: RectElement): Anchor[] {
-  const cx = rect.x + rect.w / 2;
-  const cy = rect.y + rect.h / 2;
-  return [
-    { side: "top", x: cx, y: rect.y },
-    { side: "right", x: rect.x + rect.w, y: cy },
-    { side: "bottom", x: cx, y: rect.y + rect.h },
-    { side: "left", x: rect.x, y: cy },
-  ];
-}
-
-// Where a bound endpoint actually lands: the side midpoint pushed out by
-// BINDING_GAP along the outward normal.
-export function boundEndpoint(rect: RectElement, side: AnchorSide): { x: number; y: number } {
-  const cx = rect.x + rect.w / 2;
-  const cy = rect.y + rect.h / 2;
-  switch (side) {
-    case "top":
-      return { x: cx, y: rect.y - BINDING_GAP };
-    case "right":
-      return { x: rect.x + rect.w + BINDING_GAP, y: cy };
-    case "bottom":
-      return { x: cx, y: rect.y + rect.h + BINDING_GAP };
-    case "left":
-      return { x: rect.x - BINDING_GAP, y: cy };
+// The rectangular footprint an element exposes anchors on, or null for elements
+// that can't be bound to (arrows). Rectangles use their own box; text uses its
+// measured extent from its top-left origin.
+export function anchorBox(el: SceneElement): { x: number; y: number; w: number; h: number } | null {
+  switch (el.type) {
+    case "rect":
+      return { x: el.x, y: el.y, w: el.w, h: el.h };
+    case "text": {
+      const { w, h } = measureText(el.text);
+      return { x: el.x, y: el.y, w, h };
+    }
+    case "arrow":
+      return null;
   }
 }
 
-// The nearest rectangle attachment spot to (px, py) within ANCHOR_SNAP_DIST, or
+// The four side-midpoint spots of an element, where the binding dots are drawn
+// and where endpoints snap; empty for elements that can't be bound to. This is
+// the single source of truth shared by the renderer (which draws the dots) and
+// Canvas snapping, so they never drift.
+export function elementAnchors(el: SceneElement): Anchor[] {
+  const box = anchorBox(el);
+  if (!box) return [];
+  const cx = box.x + box.w / 2;
+  const cy = box.y + box.h / 2;
+  return [
+    { side: "top", x: cx, y: box.y },
+    { side: "right", x: box.x + box.w, y: cy },
+    { side: "bottom", x: cx, y: box.y + box.h },
+    { side: "left", x: box.x, y: cy },
+  ];
+}
+
+// Where a bound endpoint actually lands: the target's side midpoint pushed out
+// by BINDING_GAP along the outward normal. Null when the target can't be bound
+// to (arrow, or a missing element), so callers can drop the binding.
+export function boundEndpoint(el: SceneElement, side: AnchorSide): { x: number; y: number } | null {
+  const box = anchorBox(el);
+  if (!box) return null;
+  const cx = box.x + box.w / 2;
+  const cy = box.y + box.h / 2;
+  switch (side) {
+    case "top":
+      return { x: cx, y: box.y - BINDING_GAP };
+    case "right":
+      return { x: box.x + box.w + BINDING_GAP, y: cy };
+    case "bottom":
+      return { x: cx, y: box.y + box.h + BINDING_GAP };
+    case "left":
+      return { x: box.x - BINDING_GAP, y: cy };
+  }
+}
+
+// The nearest element attachment spot to (px, py) within ANCHOR_SNAP_DIST, or
 // null. Distance is measured to the on-edge midpoint (the visible dot the user
 // aims at); the returned x/y is the resolved, gapped endpoint to place the
 // arrow at.
@@ -279,12 +302,11 @@ export function nearestAnchor(
   let best: { elementId: string; side: AnchorSide; x: number; y: number } | null = null;
   let bestDist = ANCHOR_SNAP_DIST;
   for (const el of elements) {
-    if (el.type !== "rect") continue;
-    for (const a of rectAnchors(el)) {
+    for (const a of elementAnchors(el)) {
       const d = Math.hypot(px - a.x, py - a.y);
       if (d <= bestDist) {
         bestDist = d;
-        const p = boundEndpoint(el, a.side);
+        const p = boundEndpoint(el, a.side)!;
         best = { elementId: el.id, side: a.side, x: p.x, y: p.y };
       }
     }
@@ -292,18 +314,19 @@ export function nearestAnchor(
   return best;
 }
 
-// Snap bound arrow endpoints back onto their rectangles. Called after any
-// mutation: a bound endpoint always derives from its rectangle's current
-// geometry, and a binding whose rectangle is gone is dropped — the arrow keeps
-// its last position. Mutates in place so it composes inside a store produce().
+// Snap bound arrow endpoints back onto their targets. Called after any
+// mutation: a bound endpoint always derives from its target's current geometry,
+// and a binding whose target is gone (or no longer bindable) is dropped — the
+// arrow keeps its last position. Mutates in place so it composes inside a store
+// produce().
 export function reconcileBindings(elements: SceneElement[]): void {
   const byId = new Map(elements.map((e) => [e.id, e]));
   for (const el of elements) {
     if (el.type !== "arrow") continue;
     if (el.startBinding) {
       const t = byId.get(el.startBinding.elementId);
-      if (t && t.type === "rect") {
-        const p = boundEndpoint(t, el.startBinding.side);
+      const p = t ? boundEndpoint(t, el.startBinding.side) : null;
+      if (p) {
         el.x1 = p.x;
         el.y1 = p.y;
       } else {
@@ -312,8 +335,8 @@ export function reconcileBindings(elements: SceneElement[]): void {
     }
     if (el.endBinding) {
       const t = byId.get(el.endBinding.elementId);
-      if (t && t.type === "rect") {
-        const p = boundEndpoint(t, el.endBinding.side);
+      const p = t ? boundEndpoint(t, el.endBinding.side) : null;
+      if (p) {
         el.x2 = p.x;
         el.y2 = p.y;
       } else {

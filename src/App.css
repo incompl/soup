@@ -128,17 +128,23 @@ body,
   color: #c72b2b;
 }
 
+/* In-place text editor. No border/padding so the glyphs sit exactly where the
+   canvas paints the committed text — editing an element doesn't shift or
+   restyle it. Grown to fit its content (see autosizeText), left-aligned and
+   top-anchored (unlike the centered .label-editor below). */
 .text-editor {
   position: absolute;
-  min-width: 200px;
-  min-height: 28px;
+  /* Above the canvas (z-index: 1) so clicks land on the textarea and place the
+     caret, instead of falling through to the canvas and committing. */
+  z-index: 6;
   margin: 0;
-  padding: 2px;
-  border: 1px dashed #f74f4f;
-  border-radius: 2px;
+  padding: 0;
+  border: none;
   outline: none;
   background: transparent;
   color: #1e1e1e;
+  white-space: pre;
+  overflow: hidden;
   resize: none;
 }
 
