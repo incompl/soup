@@ -1,5 +1,5 @@
 import { createEffect, createSignal, onCleanup, onMount, Show } from "solid-js";
-import { FONT, FONT_SIZE, LINE_HEIGHT, newId, elementAt, elementsInBox, handleAt, nearestAnchor, type AnchorSide, type HandlePos, type SceneElement } from "./scene";
+import { FONT, FONT_SIZE, LINE_HEIGHT, newId, elementAt, elementsInBox, handleAt, nearestAnchor, type AnchorPos, type HandlePos, type SceneElement } from "./scene";
 import { renderScene } from "./renderer";
 import { initEditMenu } from "./edit-menu";
 import { settings } from "./settings-store";
@@ -181,7 +181,7 @@ export default function Canvas() {
   // end re-dragged), bindable elements reveal their attachment spots and
   // activeAnchor tracks the spot the endpoint would lock onto right now.
   const [placingEnd, setPlacingEnd] = createSignal(false);
-  const [activeAnchor, setActiveAnchor] = createSignal<{ elementId: string; side: AnchorSide } | null>(null);
+  const [activeAnchor, setActiveAnchor] = createSignal<({ elementId: string } & AnchorPos) | null>(null);
   // The in-progress drag-to-select marquee: a fixed start corner (x0, y0) and
   // the moving corner (x1, y1), plus the selection to union with (non-empty
   // only for a shift-drag, which adds to what was already selected). Null when
@@ -353,7 +353,7 @@ export default function Canvas() {
         beginHistory();
         const spot = nearestAnchor(state.elements, x, y);
         setPlacingEnd(true);
-        setActiveAnchor(spot ? { elementId: spot.elementId, side: spot.side } : null);
+        setActiveAnchor(spot ? { elementId: spot.elementId, nx: spot.nx, ny: spot.ny } : null);
         const el: SceneElement = {
           id: newId(),
           type: "arrow",
@@ -361,7 +361,7 @@ export default function Canvas() {
           y1: spot ? spot.y : y,
           x2: spot ? spot.x : x,
           y2: spot ? spot.y : y,
-          startBinding: spot ? { elementId: spot.elementId, side: spot.side } : undefined,
+          startBinding: spot ? { elementId: spot.elementId, nx: spot.nx, ny: spot.ny } : undefined,
         };
         addElement(el);
         drag = { originals: [el], startX: x, startY: y };
@@ -406,19 +406,19 @@ export default function Canvas() {
   // placing. Shared by drawing a new arrow and re-dragging an existing end.
   function placeArrowEndpoint(id: string, which: "start" | "end", px: number, py: number) {
     const spot = nearestAnchor(state.elements, px, py);
-    setActiveAnchor(spot ? { elementId: spot.elementId, side: spot.side } : null);
+    setActiveAnchor(spot ? { elementId: spot.elementId, nx: spot.nx, ny: spot.ny } : null);
     if (which === "start") {
       updateElement(
         id,
         spot
-          ? { x1: spot.x, y1: spot.y, startBinding: { elementId: spot.elementId, side: spot.side } }
+          ? { x1: spot.x, y1: spot.y, startBinding: { elementId: spot.elementId, nx: spot.nx, ny: spot.ny } }
           : { x1: px, y1: py, startBinding: undefined }
       );
     } else {
       updateElement(
         id,
         spot
-          ? { x2: spot.x, y2: spot.y, endBinding: { elementId: spot.elementId, side: spot.side } }
+          ? { x2: spot.x, y2: spot.y, endBinding: { elementId: spot.elementId, nx: spot.nx, ny: spot.ny } }
           : { x2: px, y2: py, endBinding: undefined }
       );
     }
@@ -461,7 +461,7 @@ export default function Canvas() {
       } else if (state.tool === "arrow") {
         // Preview which spot the initial click would start bound to.
         const spot = nearestAnchor(state.elements, e.offsetX, e.offsetY);
-        setActiveAnchor(spot ? { elementId: spot.elementId, side: spot.side } : null);
+        setActiveAnchor(spot ? { elementId: spot.elementId, nx: spot.nx, ny: spot.ny } : null);
       }
       return;
     }

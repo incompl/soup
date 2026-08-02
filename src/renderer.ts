@@ -15,7 +15,7 @@ import {
   HANDLE_SIZE,
   LINE_HEIGHT,
   measureText,
-  type AnchorSide,
+  type AnchorPos,
   type SceneElement,
 } from "./scene";
 
@@ -87,10 +87,10 @@ export function renderScene(
   editingLabelId: string | null = null,
   editingLabelText = "",
   // While an arrow endpoint is being placed (drawn or re-dragged), every
-  // bindable element shows its four attachment spots so the user can see where
-  // the endpoint will lock; activeAnchor is the one it would currently snap to.
+  // bindable element shows its attachment spots so the user can see where the
+  // endpoint will lock; activeAnchor is the one it would currently snap to.
   showAnchors = false,
-  activeAnchor: { elementId: string; side: AnchorSide } | null = null,
+  activeAnchor: ({ elementId: string } & AnchorPos) | null = null,
   // The drag-to-select marquee, given as two opposite corners, or null when no
   // marquee drag is in progress.
   marquee: { x0: number; y0: number; x1: number; y1: number } | null = null,
@@ -137,18 +137,19 @@ function drawMarquee(
   ctx.setLineDash([]);
 }
 
-// The attachment spots on every bindable element: hollow dots at each side
-// midpoint, with the one about to bind drawn filled and a touch larger.
+// The attachment spots on every bindable element: hollow dots around the
+// perimeter, with the one about to bind drawn filled and a touch larger.
 function drawAnchors(
   ctx: CanvasRenderingContext2D,
   elements: readonly SceneElement[],
-  active: { elementId: string; side: AnchorSide } | null
+  active: ({ elementId: string } & AnchorPos) | null
 ) {
   ctx.lineWidth = 1.5;
   ctx.strokeStyle = SELECTION;
   for (const el of elements) {
     for (const a of elementAnchors(el)) {
-      const isActive = !!active && active.elementId === el.id && active.side === a.side;
+      const isActive =
+        !!active && active.elementId === el.id && active.nx === a.nx && active.ny === a.ny;
       ctx.beginPath();
       ctx.arc(a.x, a.y, isActive ? ANCHOR_DOT_R + 2 : ANCHOR_DOT_R, 0, Math.PI * 2);
       ctx.fillStyle = isActive ? SELECTION : "#ffffff";

@@ -16,15 +16,22 @@ export interface RectElement {
   label?: string;
 }
 
-// One of an element's four side-midpoint attachment spots. An arrow endpoint
-// "locks" to a spot: the side is stored, but the actual coordinate is always
-// derived from the target's current geometry (see boundEndpoint), so a bound
-// endpoint tracks the target as it moves and resizes.
-export type AnchorSide = "top" | "right" | "bottom" | "left";
+// A spot on an element's perimeter, given as normalized coordinates within its
+// box: each of nx/ny is one of {0, .25, .5, .75, 1}, with at least one pinned to
+// 0 or 1 so the point sits on an edge. This covers the 4 corners, the 4 side
+// midpoints, and the 8 quarter points between them — 16 spots in all. An arrow
+// endpoint "locks" to a spot: the position is stored, but the actual coordinate
+// is always derived from the target's current geometry (see boundEndpoint), so
+// a bound endpoint tracks the target as it moves and resizes.
+export interface AnchorPos {
+  nx: number;
+  ny: number;
+}
 
 export interface Binding {
   elementId: string;
-  side: AnchorSide;
+  nx: number;
+  ny: number;
 }
 
 export interface ArrowElement {
@@ -218,10 +225,11 @@ export function handleAt(el: SceneElement, px: number, py: number): HandlePos | 
 
 // --- Arrow-to-element bindings -----------------------------------------------
 //
-// Any element with a rectangular footprint (rectangles and text) offers four
-// attachment spots at its side midpoints. An arrow endpoint snaps to a spot and
-// lands a small gap outside the edge, so the arrowhead/tail stops just short of
-// the outline instead of overlapping it.
+// Any element with a rectangular footprint (rectangles and text) offers sixteen
+// attachment spots around its perimeter (corners, side midpoints, and the
+// quarter points between them). An arrow endpoint snaps to a spot and lands a
+// small gap outside the edge, so the arrowhead/tail stops just short of the
+// outline instead of overlapping it.
 
 // Small clearance kept between a bound endpoint and the rectangle edge.
 export const BINDING_GAP = 6;
@@ -231,10 +239,23 @@ export const ANCHOR_SNAP_DIST = 20;
 export const ANCHOR_DOT_R = 4;
 
 export interface Anchor {
-  side: AnchorSide;
+  nx: number;
+  ny: number;
   x: number;
   y: number;
 }
+
+// The 16 perimeter spots as normalized positions, walked clockwise from the
+// top-left corner so the ordering is stable. Shared by every bindable element.
+const ANCHOR_POSITIONS: readonly AnchorPos[] = (() => {
+  const steps = [0, 0.25, 0.5, 0.75];
+  const pts: AnchorPos[] = [];
+  for (const t of steps) pts.push({ nx: t, ny: 0 }); // top edge, left→right
+  for (const t of steps) pts.push({ nx: 1, ny: t }); // right edge, top→bottom
+  for (const t of steps) pts.push({ nx: 1 - t, ny: 1 }); // bottom edge, right→left
+  for (const t of steps) pts.push({ nx: 0, ny: 1 - t }); // left edge, bottom→top
+  return pts;
+})();
 
 // The rectangular footprint an element exposes anchors on, or null for elements
 // that can't be bound to (arrows). Rectangles use their own box; text uses its
@@ -252,41 +273,34 @@ export function anchorBox(el: SceneElement): { x: number; y: number; w: number; 
   }
 }
 
-// The four side-midpoint spots of an element, where the binding dots are drawn
-// and where endpoints snap; empty for elements that can't be bound to. This is
-// the single source of truth shared by the renderer (which draws the dots) and
-// Canvas snapping, so they never drift.
+// The perimeter spots of an element, where the binding dots are drawn and where
+// endpoints snap; empty for elements that can't be bound to. This is the single
+// source of truth shared by the renderer (which draws the dots) and Canvas
+// snapping, so they never drift.
 export function elementAnchors(el: SceneElement): Anchor[] {
   const box = anchorBox(el);
   if (!box) return [];
-  const cx = box.x + box.w / 2;
-  const cy = box.y + box.h / 2;
-  return [
-    { side: "top", x: cx, y: box.y },
-    { side: "right", x: box.x + box.w, y: cy },
-    { side: "bottom", x: cx, y: box.y + box.h },
-    { side: "left", x: box.x, y: cy },
-  ];
+  return ANCHOR_POSITIONS.map((p) => ({
+    nx: p.nx,
+    ny: p.ny,
+    x: box.x + p.nx * box.w,
+    y: box.y + p.ny * box.h,
+  }));
 }
 
-// Where a bound endpoint actually lands: the target's side midpoint pushed out
-// by BINDING_GAP along the outward normal. Null when the target can't be bound
-// to (arrow, or a missing element), so callers can drop the binding.
-export function boundEndpoint(el: SceneElement, side: AnchorSide): { x: number; y: number } | null {
+// Where a bound endpoint actually lands: the target's perimeter spot pushed out
+// by BINDING_GAP along the outward normal (diagonal at corners). Null when the
+// target can't be bound to (arrow, or a missing element), so callers can drop
+// the binding.
+export function boundEndpoint(el: SceneElement, pos: AnchorPos): { x: number; y: number } | null {
   const box = anchorBox(el);
   if (!box) return null;
-  const cx = box.x + box.w / 2;
-  const cy = box.y + box.h / 2;
-  switch (side) {
-    case "top":
-      return { x: cx, y: box.y - BINDING_GAP };
-    case "right":
-      return { x: box.x + box.w + BINDING_GAP, y: cy };
-    case "bottom":
-      return { x: cx, y: box.y + box.h + BINDING_GAP };
-    case "left":
-      return { x: box.x - BINDING_GAP, y: cy };
-  }
+  const x = box.x + pos.nx * box.w;
+  const y = box.y + pos.ny * box.h;
+  const ox = pos.nx === 0 ? -1 : pos.nx === 1 ? 1 : 0;
+  const oy = pos.ny === 0 ? -1 : pos.ny === 1 ? 1 : 0;
+  const len = Math.hypot(ox, oy) || 1;
+  return { x: x + (ox / len) * BINDING_GAP, y: y + (oy / len) * BINDING_GAP };
 }
 
 // The nearest element attachment spot to (px, py) within ANCHOR_SNAP_DIST, or
@@ -297,16 +311,16 @@ export function nearestAnchor(
   elements: readonly SceneElement[],
   px: number,
   py: number
-): { elementId: string; side: AnchorSide; x: number; y: number } | null {
-  let best: { elementId: string; side: AnchorSide; x: number; y: number } | null = null;
+): { elementId: string; nx: number; ny: number; x: number; y: number } | null {
+  let best: { elementId: string; nx: number; ny: number; x: number; y: number } | null = null;
   let bestDist = ANCHOR_SNAP_DIST;
   for (const el of elements) {
     for (const a of elementAnchors(el)) {
       const d = Math.hypot(px - a.x, py - a.y);
       if (d <= bestDist) {
         bestDist = d;
-        const p = boundEndpoint(el, a.side)!;
-        best = { elementId: el.id, side: a.side, x: p.x, y: p.y };
+        const p = boundEndpoint(el, a)!;
+        best = { elementId: el.id, nx: a.nx, ny: a.ny, x: p.x, y: p.y };
       }
     }
   }
@@ -324,7 +338,7 @@ export function reconcileBindings(elements: SceneElement[]): void {
     if (el.type !== "arrow") continue;
     if (el.startBinding) {
       const t = byId.get(el.startBinding.elementId);
-      const p = t ? boundEndpoint(t, el.startBinding.side) : null;
+      const p = t ? boundEndpoint(t, el.startBinding) : null;
       if (p) {
         el.x1 = p.x;
         el.y1 = p.y;
@@ -334,7 +348,7 @@ export function reconcileBindings(elements: SceneElement[]): void {
     }
     if (el.endBinding) {
       const t = byId.get(el.endBinding.elementId);
-      const p = t ? boundEndpoint(t, el.endBinding.side) : null;
+      const p = t ? boundEndpoint(t, el.endBinding) : null;
       if (p) {
         el.x2 = p.x;
         el.y2 = p.y;
