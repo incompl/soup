@@ -1,13 +1,18 @@
 # soup
 
-A sketching app (in the vein of Excalidraw / Scapple). Currently a minimal
-skeleton: rectangle, arrow, and text tools.
+A simple desktop diagramming app.
+
+I made this for myself but you're welcome to use it.
+
+## Philosophy
+
+The main feature is that it has very few features. High polish, high completeness, no distractions, no bloat.
 
 ## Stack
 
 - **Tauri 2** — desktop shell
-- **SolidJS + TypeScript + Vite** — UI, managed with **pnpm**
-- **Canvas 2D** — scene rendering (immediate mode, Excalidraw-style)
+- **SolidJS + TypeScript + Vite** — UI
+- **Canvas 2D** — scene rendering
 
 ## Architecture
 
@@ -19,15 +24,13 @@ and SVG→PDF conversion — exposed as Tauri commands. Exports flow
 `scene → SVG (TS) → PDF (Rust)` so the Rust side never needs to understand
 the document format.
 
-## Development
+## Install
+
+No prebuilt releases - build it yourself. Requires [Rust](https://www.rust-lang.org/tools/install), [Node](https://nodejs.org/), and [pnpm](https://pnpm.io/).
 
 ```sh
 pnpm install
-pnpm tauri dev
+pnpm tauri build
 ```
 
-## Shortcuts
-
-- `V`/`1` select, `R`/`2` rectangle, `A`/`3` arrow, `T`/`4` text
-- `Delete`/`Backspace` removes the selection; `Escape` deselects
-- Text: `Enter` commits, `Shift+Enter` for a new line
+On macOS the dmg auto-opens. Drag Soup into Applications and you're good to go.
