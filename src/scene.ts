@@ -294,12 +294,32 @@ export const BINDING_GAP = 6;
 export const ANCHOR_SNAP_DIST = 20;
 // Drawn radius of the attachment spots shown while placing an endpoint.
 export const ANCHOR_DOT_R = 4;
+// Shortest edge length (px) that still fits the two quarter spots between a
+// corner and the side midpoint without them looking cramped. Below this, an
+// edge shows only its corners and midpoint; the quarter spots on that edge stay
+// hidden (though still bindable). At this length the spots sit a quarter of the
+// edge apart, ~14px, comfortably clear of one another.
+export const QUARTER_ANCHOR_MIN_EDGE = 56;
+// Shortest edge length (px) at which a quarter spot exists at all. The spots sit
+// a quarter-edge apart, so below 8·ANCHOR_DOT_R that spacing is under a dot
+// diameter and they'd overlap their neighbors. Under this, an edge's quarter
+// spots don't exist as targets — not drawn, not snappable even when hovered
+// (though an arrow already bound to one still holds, since bindings resolve from
+// the stored position, not this list).
+export const QUARTER_ANCHOR_MIN_FIT = 8 * ANCHOR_DOT_R;
 
 export interface Anchor {
   nx: number;
   ny: number;
   x: number;
   y: number;
+  // Whether this spot is drawn / freely snappable at the element's current
+  // size. Quarter spots go invisible on a short edge to cut clutter; corners
+  // and midpoints are always visible. Invisible spots still exist as binding
+  // targets — an arrow already attached to one stays attached, and aiming at one
+  // reveals just that spot (it becomes the active anchor). Quarter spots with no
+  // room at all (see QUARTER_ANCHOR_MIN_FIT) are omitted from the list instead.
+  visible: boolean;
 }
 
 // The 16 perimeter spots as normalized positions, walked clockwise from the
@@ -330,19 +350,36 @@ export function anchorBox(el: SceneElement): { x: number; y: number; w: number; 
   }
 }
 
+// The edge length that governs a quarter spot: its width for a spot on a
+// horizontal edge (nx at 0.25/0.75), its height for one on a vertical edge (ny
+// at 0.25/0.75). Null for corners and midpoints, which never depend on size.
+function quarterEdge(p: AnchorPos, w: number, h: number): number | null {
+  if (p.nx === 0.25 || p.nx === 0.75) return w;
+  if (p.ny === 0.25 || p.ny === 0.75) return h;
+  return null;
+}
+
 // The perimeter spots of an element, where the binding dots are drawn and where
 // endpoints snap; empty for elements that can't be bound to. This is the single
 // source of truth shared by the renderer (which draws the dots) and Canvas
-// snapping, so they never drift.
+// snapping, so they never drift. Quarter spots with no room at all are left out
+// entirely; those merely cramped are included but flagged not-visible.
 export function elementAnchors(el: SceneElement): Anchor[] {
   const box = anchorBox(el);
   if (!box) return [];
-  return ANCHOR_POSITIONS.map((p) => ({
-    nx: p.nx,
-    ny: p.ny,
-    x: box.x + p.nx * box.w,
-    y: box.y + p.ny * box.h,
-  }));
+  const out: Anchor[] = [];
+  for (const p of ANCHOR_POSITIONS) {
+    const edge = quarterEdge(p, box.w, box.h);
+    if (edge !== null && edge < QUARTER_ANCHOR_MIN_FIT) continue;
+    out.push({
+      nx: p.nx,
+      ny: p.ny,
+      x: box.x + p.nx * box.w,
+      y: box.y + p.ny * box.h,
+      visible: edge === null || edge >= QUARTER_ANCHOR_MIN_EDGE,
+    });
+  }
+  return out;
 }
 
 // Where a bound endpoint actually lands: the target's perimeter spot pushed out
@@ -363,16 +400,20 @@ export function boundEndpoint(el: SceneElement, pos: AnchorPos): { x: number; y:
 // The nearest element attachment spot to (px, py) within ANCHOR_SNAP_DIST, or
 // null. Distance is measured to the on-edge midpoint (the visible dot the user
 // aims at); the returned x/y is the resolved, gapped endpoint to place the
-// arrow at.
+// arrow at. Only spots the user can actually see snap: an element's hidden
+// quarter spots stay out of reach unless it's the hovered element, which
+// reveals them.
 export function nearestAnchor(
   elements: readonly SceneElement[],
   px: number,
-  py: number
+  py: number,
+  hoveredId: string | null = null
 ): { elementId: string; nx: number; ny: number; x: number; y: number } | null {
   let best: { elementId: string; nx: number; ny: number; x: number; y: number } | null = null;
   let bestDist = ANCHOR_SNAP_DIST;
   for (const el of elements) {
     for (const a of elementAnchors(el)) {
+      if (!a.visible && el.id !== hoveredId) continue;
       const d = Math.hypot(px - a.x, py - a.y);
       if (d <= bestDist) {
         bestDist = d;
@@ -382,6 +423,31 @@ export function nearestAnchor(
     }
   }
   return best;
+}
+
+// The topmost bindable element the pointer is over, counting a margin of
+// ANCHOR_SNAP_DIST around its footprint so its perimeter spots (which sit just
+// outside the edge) count as hovered too. Used to reveal an element's hidden
+// quarter spots while placing an arrow. Null when the pointer is over nothing
+// bindable.
+export function hoveredAnchorElement(
+  elements: readonly SceneElement[],
+  px: number,
+  py: number
+): string | null {
+  for (let i = elements.length - 1; i >= 0; i--) {
+    const box = anchorBox(elements[i]);
+    if (!box) continue;
+    if (
+      px >= box.x - ANCHOR_SNAP_DIST &&
+      px <= box.x + box.w + ANCHOR_SNAP_DIST &&
+      py >= box.y - ANCHOR_SNAP_DIST &&
+      py <= box.y + box.h + ANCHOR_SNAP_DIST
+    ) {
+      return elements[i].id;
+    }
+  }
+  return null;
 }
 
 // Snap bound arrow endpoints back onto their targets. Called after any

@@ -1,5 +1,5 @@
 import { createEffect, createSignal, onCleanup, onMount, Show } from "solid-js";
-import { fontString, FONT_SIZE, LINE_HEIGHT, newId, elementAt, elementsInBox, handleAt, nearestAnchor, type AnchorPos, type HandlePos, type SceneElement } from "./scene";
+import { fontString, FONT_SIZE, LINE_HEIGHT, newId, elementAt, elementsInBox, handleAt, nearestAnchor, hoveredAnchorElement, type AnchorPos, type HandlePos, type SceneElement } from "./scene";
 import { renderScene } from "./renderer";
 import { initEditMenu } from "./edit-menu";
 import { fontsReady } from "./fonts";
@@ -363,7 +363,8 @@ export default function Canvas() {
         // A new arrow can start bound: if the press lands on a spot, anchor its
         // tail there, otherwise start free at the pointer.
         beginHistory();
-        const spot = nearestAnchor(state.elements, x, y);
+        const hovered = hoveredAnchorElement(state.elements, x, y);
+        const spot = nearestAnchor(state.elements, x, y, hovered);
         setPlacingEnd(true);
         setActiveAnchor(spot ? { elementId: spot.elementId, nx: spot.nx, ny: spot.ny } : null);
         const el: SceneElement = {
@@ -417,7 +418,8 @@ export default function Canvas() {
   // binding is cleared. Also updates the active-spot highlight shown while
   // placing. Shared by drawing a new arrow and re-dragging an existing end.
   function placeArrowEndpoint(id: string, which: "start" | "end", px: number, py: number) {
-    const spot = nearestAnchor(state.elements, px, py);
+    const hovered = hoveredAnchorElement(state.elements, px, py);
+    const spot = nearestAnchor(state.elements, px, py, hovered);
     setActiveAnchor(spot ? { elementId: spot.elementId, nx: spot.nx, ny: spot.ny } : null);
     if (which === "start") {
       updateElement(
@@ -471,8 +473,10 @@ export default function Canvas() {
         const over = solo ? handleAt(solo, e.offsetX, e.offsetY) : null;
         canvasEl.style.cursor = over ? HANDLE_CURSOR[over] : "";
       } else if (state.tool === "arrow") {
-        // Preview which spot the initial click would start bound to.
-        const spot = nearestAnchor(state.elements, e.offsetX, e.offsetY);
+        // Preview which spot the initial click would start bound to, and reveal
+        // the hovered element's cramped-out quarter spots.
+        const hovered = hoveredAnchorElement(state.elements, e.offsetX, e.offsetY);
+        const spot = nearestAnchor(state.elements, e.offsetX, e.offsetY, hovered);
         setActiveAnchor(spot ? { elementId: spot.elementId, nx: spot.nx, ny: spot.ny } : null);
       }
       return;

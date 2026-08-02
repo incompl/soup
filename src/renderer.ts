@@ -160,7 +160,10 @@ function drawMarquee(
 }
 
 // The attachment spots on every bindable element: hollow dots around the
-// perimeter, with the one about to bind drawn filled and a touch larger.
+// perimeter, with the one about to bind drawn filled and a touch larger. A
+// spot's quarter positions are hidden on short edges to cut clutter; a hidden
+// quarter appears only while it's the active (about-to-bind) spot, so aiming at
+// one on a small element reveals just that spot rather than the whole set.
 function drawAnchors(
   ctx: CanvasRenderingContext2D,
   elements: readonly SceneElement[],
@@ -172,6 +175,7 @@ function drawAnchors(
     for (const a of elementAnchors(el)) {
       const isActive =
         !!active && active.elementId === el.id && active.nx === a.nx && active.ny === a.ny;
+      if (!a.visible && !isActive) continue;
       ctx.beginPath();
       ctx.arc(a.x, a.y, isActive ? ANCHOR_DOT_R + 2 : ANCHOR_DOT_R, 0, Math.PI * 2);
       ctx.fillStyle = isActive ? SELECTION : "#ffffff";
