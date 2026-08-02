@@ -240,6 +240,10 @@ export default function Canvas() {
 
   function onKeyDown(e: KeyboardEvent) {
     if (e.target instanceof HTMLTextAreaElement || e.target instanceof HTMLInputElement) return;
+    // A modifier means this is a menu/app shortcut (e.g. Cmd-S to save), not a
+    // bare tool key — let it fall through to its handler without also switching
+    // tools.
+    if (e.metaKey || e.ctrlKey || e.altKey) return;
     // Tool shortcuts depend on the active scheme (normal letters vs. home-row);
     // number keys 1-4 work in either. See shortcuts.ts.
     const tool = toolForKey(e.key, settings.shortcutScheme);

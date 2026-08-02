@@ -190,7 +190,9 @@ export async function saveDocumentAs(): Promise<boolean> {
     setCurrentPath(path);
     markSaved();
     addRecent(path);
-    notify("Saved!", "success");
+    // No "Saved!" toast here: the dialog closing is itself the feedback. The
+    // toast is only for silent saves (Cmd-S over an existing file), handled in
+    // saveDocument.
     return true;
   } catch (err) {
     await reportError("save the drawing", err);
