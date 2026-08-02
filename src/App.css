@@ -45,14 +45,25 @@ body,
 
 /* Draggable strip standing in for the native title bar. Sits above the
    canvas but below the toolbar so the traffic lights + empty top area
-   move the window. */
+   move the window. Height is half the toolbar band (top margin 12px +
+   44px bar + 12px = 68px) so the cursor clears it before reaching the
+   toolbar, avoiding a hover flash on the way in. */
 .titlebar {
   position: absolute;
   top: 0;
   left: 0;
   right: 0;
-  height: 28px;
+  height: 32px;
   z-index: 5;
+  transition: background-color 0.15s ease;
+}
+
+/* Subtle wash while hovering the drag band, so it reads as a distinct
+   affordance from clicking into the canvas. Renders below the toolbar
+   (z-index: 10), which is a sibling, so hovering the bar itself won't
+   trigger it. */
+.titlebar:hover {
+  background-color: rgba(0, 0, 0, 0.1);
 }
 
 .canvas-container canvas {
