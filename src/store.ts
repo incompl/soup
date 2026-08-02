@@ -1,5 +1,14 @@
 import { createStore, produce, unwrap } from "solid-js/store";
-import { reconcileBindings, type SceneElement, type Tool } from "./scene";
+import {
+  DEFAULT_DOC_SETTINGS,
+  reconcileBindings,
+  setActiveFont,
+  type DocFont,
+  type DocSettings,
+  type LineStyle,
+  type SceneElement,
+  type Tool,
+} from "./scene";
 
 interface AppState {
   elements: SceneElement[];
@@ -8,6 +17,10 @@ interface AppState {
   // shift-clicking or Select All. Order is not meaningful.
   selectedIds: string[];
   tool: Tool;
+  // Per-document look (line style + font), persisted inside the `.soup` file.
+  // The renderer and export read it; the native Document menu writes it. Loading
+  // a document replaces it (see setScene); a fresh document starts at defaults.
+  docSettings: DocSettings;
   // Unsaved-changes flag: set by any element mutation, cleared on save/load.
   // The document persistence layer (persistence.ts) reads it to drive the
   // title bar's dirty marker and the "discard changes?" prompt.
@@ -18,8 +31,14 @@ const [state, setState] = createStore<AppState>({
   elements: [],
   selectedIds: [],
   tool: "select",
+  docSettings: { ...DEFAULT_DOC_SETTINGS },
   dirty: false,
 });
+
+// Keep the scene module's active font (used for text measurement/layout, which
+// runs outside the render effect during hit-testing) in step with the initial
+// document settings; setScene / setDocFont maintain it thereafter.
+setActiveFont(state.docSettings.font);
 
 export { state };
 
@@ -39,6 +58,8 @@ export { state };
 interface Snapshot {
   elements: SceneElement[];
   selectedIds: string[];
+  // Captured so a line-style/font change is undoable alongside element edits.
+  docSettings: DocSettings;
 }
 
 const undoStack: Snapshot[] = [];
@@ -54,6 +75,7 @@ function snapshot(): Snapshot {
   return {
     elements: structuredClone(unwrap(state.elements)) as SceneElement[],
     selectedIds: [...state.selectedIds],
+    docSettings: { ...unwrap(state.docSettings) },
   };
 }
 
@@ -72,12 +94,17 @@ function elementsChanged(a: SceneElement[], b: SceneElement[]): boolean {
 }
 
 function restore(s: Snapshot) {
+  // Keep the scene module's active font in step before painting; the render
+  // effect and the native menu (which track state.docSettings) follow the store
+  // update below.
+  setActiveFont(s.docSettings.font);
   setState(
     produce((st) => {
       // Clone out of the stack so future undos/redos of the same entry stay
       // independent of the now-live objects.
       st.elements = structuredClone(s.elements);
       st.selectedIds = [...s.selectedIds];
+      st.docSettings = { ...s.docSettings };
       st.dirty = true;
     })
   );
@@ -203,23 +230,46 @@ export function removeElements(ids: string[]) {
 
 // Replace the whole scene, e.g. after opening a file or starting a new
 // document. Resets selection and clears the dirty flag since the store now
-// matches what's on disk (or a fresh empty document).
-export function setScene(elements: SceneElement[]) {
+// matches what's on disk (or a fresh empty document). Document settings come
+// from the loaded file (defaults for a new document).
+export function setScene(elements: SceneElement[], docSettings: DocSettings = DEFAULT_DOC_SETTINGS) {
   // A freshly loaded (or new) document is a fresh history: you can't undo back
   // into the previous document.
   undoStack.length = 0;
   redoStack.length = 0;
   gestureBaseline = null;
+  setActiveFont(docSettings.font);
   setState(
     produce((s) => {
       s.elements = elements;
       s.selectedIds = [];
+      s.docSettings = { ...docSettings };
       // Normalize any bound endpoints against their rectangles (and drop
       // dangling bindings) as the freshly loaded document comes in.
       reconcileBindings(s.elements);
       s.dirty = false;
     })
   );
+}
+
+// Document-look setters, driven by the native Document menu. Each records one
+// undo step and marks the document dirty (the change is saved in the file).
+// Changing the font also updates the scene module's active font so text
+// re-measures. The no-op guard keeps a click on the already-active option from
+// leaving a dead history entry.
+export function setLineStyle(lineStyle: LineStyle) {
+  if (state.docSettings.lineStyle === lineStyle) return;
+  record();
+  setState("docSettings", "lineStyle", lineStyle);
+  setState("dirty", true);
+}
+
+export function setDocFont(font: DocFont) {
+  if (state.docSettings.font === font) return;
+  record();
+  setActiveFont(font);
+  setState("docSettings", "font", font);
+  setState("dirty", true);
 }
 
 // Clear the dirty flag after a successful save without touching elements.

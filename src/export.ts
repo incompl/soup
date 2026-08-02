@@ -18,26 +18,26 @@ import rough from "roughjs";
 import { notify } from "./notification-store";
 import { suggestedExportName } from "./persistence";
 import {
-  ARROW_OPTS,
+  arrowOptsFor,
   ARROWHEAD_LEN,
-  elementSeed,
   LABEL_PAD,
-  SHAPE_OPTS,
+  shapeOptsFor,
   STROKE,
 } from "./renderer";
 import {
+  BUNDLED_PRIMARY,
   elementBounds,
+  fontFamily,
   FONT_SIZE,
   LINE_HEIGHT,
   measureText,
+  type LineStyle,
   type SceneElement,
 } from "./scene";
+import { ensureFontFaceCss, fontFaceCss } from "./fonts";
 import { state } from "./store";
 
 const SVG_NS = "http://www.w3.org/2000/svg";
-// The font-family half of scene.ts's FONT, without the leading size — SVG wants
-// font-size and font-family as separate attributes.
-const FONT_FAMILY = "ui-sans-serif, system-ui, sans-serif";
 // Breathing room around the tight content box, also absorbing the arrowhead
 // overhang past an arrow's endpoint.
 const PADDING = 16;
@@ -101,7 +101,7 @@ function svgText(
   const node = doc.ownerDocument.createElementNS(SVG_NS, "text");
   node.setAttribute("x", String(x));
   node.setAttribute("y", String(y));
-  node.setAttribute("font-family", FONT_FAMILY);
+  node.setAttribute("font-family", fontFamily());
   node.setAttribute("font-size", String(FONT_SIZE));
   node.setAttribute("fill", STROKE);
   if (anchor !== "start") node.setAttribute("text-anchor", anchor);
@@ -122,15 +122,21 @@ function appendLabel(doc: SVGSVGElement, into: SVGElement, text: string, cx: num
 
 // Walk one element into <g>, mirroring renderer.ts's drawElement (minus the
 // mid-edit label-suppression, which never applies to an export).
-function appendElement(doc: SVGSVGElement, rc: ReturnType<typeof rough.svg>, into: SVGElement, el: SceneElement) {
+function appendElement(
+  doc: SVGSVGElement,
+  rc: ReturnType<typeof rough.svg>,
+  into: SVGElement,
+  el: SceneElement,
+  lineStyle: LineStyle
+) {
   switch (el.type) {
     case "rect": {
-      into.appendChild(rc.rectangle(el.x, el.y, el.w, el.h, { ...SHAPE_OPTS, seed: elementSeed(el.id) }));
+      into.appendChild(rc.rectangle(el.x, el.y, el.w, el.h, shapeOptsFor(lineStyle, el.id)));
       if (el.label) appendLabel(doc, into, el.label, el.x + el.w / 2, el.y + el.h / 2);
       break;
     }
     case "arrow": {
-      const opts = { ...ARROW_OPTS, seed: elementSeed(el.id) };
+      const opts = arrowOptsFor(lineStyle, el.id);
       const dx = el.x2 - el.x1;
       const dy = el.y2 - el.y1;
       const len = Math.hypot(dx, dy) || 1;
@@ -183,7 +189,15 @@ interface BuiltSvg {
 // Serialize the scene to a standalone SVG string sized to its content box, or
 // null when the scene is empty. Content is translated so the box's top-left
 // sits at the origin; the background is left transparent.
-function buildSvg(elements: readonly SceneElement[]): BuiltSvg | null {
+function buildSvg(
+  elements: readonly SceneElement[],
+  lineStyle: LineStyle,
+  // A self-contained `@font-face` rule (woff2 base64-inlined) for the document's
+  // font, or "" to reference it by name only. Embedded so the SVG renders in the
+  // right font when opened elsewhere — and, crucially, when rasterized to PNG via
+  // <img>, which can't see the app's loaded faces.
+  fontFaces: string
+): BuiltSvg | null {
   const box = sceneBox(elements);
   if (!box) return null;
 
@@ -193,25 +207,39 @@ function buildSvg(elements: readonly SceneElement[]): BuiltSvg | null {
   svg.setAttribute("height", String(box.h));
   svg.setAttribute("viewBox", `0 0 ${box.w} ${box.h}`);
 
+  if (fontFaces) {
+    const style = document.createElementNS(SVG_NS, "style");
+    style.textContent = fontFaces;
+    svg.appendChild(style);
+  }
+
   const g = document.createElementNS(SVG_NS, "g");
   g.setAttribute("transform", `translate(${-box.x} ${-box.y})`);
   svg.appendChild(g);
 
   const rc = rough.svg(svg);
-  for (const el of elements) appendElement(svg, rc, g, el);
+  for (const el of elements) appendElement(svg, rc, g, el, lineStyle);
 
   const markup = new XMLSerializer().serializeToString(svg);
   return { markup, width: box.w, height: box.h };
 }
 
-export function sceneToSvg(elements: readonly SceneElement[]): string | null {
-  return buildSvg(elements)?.markup ?? null;
+export function sceneToSvg(
+  elements: readonly SceneElement[],
+  lineStyle: LineStyle,
+  fontFaces = ""
+): string | null {
+  return buildSvg(elements, lineStyle, fontFaces)?.markup ?? null;
 }
 
 // Rasterize the scene's SVG onto a transparent canvas at PNG_SCALE and encode
 // PNG bytes. Null when the scene is empty. Rejects if the SVG can't be decoded.
-export async function sceneToPngBytes(elements: readonly SceneElement[]): Promise<Uint8Array | null> {
-  const built = buildSvg(elements);
+export async function sceneToPngBytes(
+  elements: readonly SceneElement[],
+  lineStyle: LineStyle,
+  fontFaces = ""
+): Promise<Uint8Array | null> {
+  const built = buildSvg(elements, lineStyle, fontFaces);
   if (!built) return null;
 
   const url = URL.createObjectURL(new Blob([built.markup], { type: "image/svg+xml" }));
@@ -245,8 +273,15 @@ async function reportError(err: unknown): Promise<void> {
   await message(`Could not export the drawing.\n\n${detail}`, { title: "soup", kind: "error" });
 }
 
+// The embeddable @font-face for the document's current font, ready to inline
+// into an export. Awaits the one-time fetch/base64 of the bundled woff2.
+async function currentFontFaces(): Promise<string> {
+  await ensureFontFaceCss();
+  return fontFaceCss(BUNDLED_PRIMARY[state.docSettings.font]);
+}
+
 async function exportSvg(): Promise<void> {
-  const markup = sceneToSvg(state.elements);
+  const markup = sceneToSvg(state.elements, state.docSettings.lineStyle, await currentFontFaces());
   if (!markup) {
     notify("Nothing to export.", "info");
     return;
@@ -266,7 +301,11 @@ async function exportSvg(): Promise<void> {
 
 async function exportPng(): Promise<void> {
   try {
-    const bytes = await sceneToPngBytes(state.elements);
+    const bytes = await sceneToPngBytes(
+      state.elements,
+      state.docSettings.lineStyle,
+      await currentFontFaces()
+    );
     if (!bytes) {
       notify("Nothing to export.", "info");
       return;

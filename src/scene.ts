@@ -65,7 +65,64 @@ export type SceneElement = RectElement | ArrowElement | TextElement;
 
 export const FONT_SIZE = 16;
 export const LINE_HEIGHT = 22;
-export const FONT = `${FONT_SIZE}px ui-sans-serif, system-ui, sans-serif`;
+
+// --- Document settings -------------------------------------------------------
+//
+// Per-document (not per-app) preferences, saved inside the `.soup` file rather
+// than the global app settings — a drawing carries its own look. Set from the
+// native Document menu (see lib.rs / doc-menu.ts). Two knobs so far:
+//   - lineStyle: "rough" hand-drawn strokes (roughjs) vs. "clean" straight ones.
+//   - font: which web-safe family text and labels render in.
+
+export type LineStyle = "rough" | "clean";
+export type DocFont = "sketch" | "serif" | "sans";
+
+export interface DocSettings {
+  lineStyle: LineStyle;
+  font: DocFont;
+}
+
+export const DEFAULT_DOC_SETTINGS: DocSettings = { lineStyle: "rough", font: "sketch" };
+
+// The bundled OFL face backing each choice (loaded in fonts.ts). Named
+// separately from the stacks below so font loading and SVG-embed can address the
+// exact family, while the stacks keep a generic fallback for the brief window
+// before the woff2 finishes loading.
+export const BUNDLED_PRIMARY: Record<DocFont, string> = {
+  sketch: "Shantell Sans",
+  serif: "Lora",
+  sans: "Inter",
+};
+
+// Font-family stacks per choice: the bundled face first, then a same-genre
+// fallback used only until that face loads (see fonts.ts).
+export const FONT_FAMILIES: Record<DocFont, string> = {
+  sketch: '"Shantell Sans", cursive',
+  serif: '"Lora", Georgia, "Times New Roman", serif',
+  sans: '"Inter", ui-sans-serif, system-ui, sans-serif',
+};
+
+// The family the current document measures and draws with. A document setting,
+// not a constant: the whole app renders one scene at a time, so the active font
+// lives here as module state and setActiveFont keeps it in step with the store
+// (on load and on a Font-menu change). measureText, the renderer, the text
+// editors, and the SVG export all read it, so measurement and drawing never
+// drift. Starts at the default (sketch) so first paint matches a fresh document.
+let activeFontFamily = FONT_FAMILIES[DEFAULT_DOC_SETTINGS.font];
+
+export function setActiveFont(font: DocFont): void {
+  activeFontFamily = FONT_FAMILIES[font];
+}
+
+// The active family alone (SVG export wants font-family separately from size).
+export function fontFamily(): string {
+  return activeFontFamily;
+}
+
+// The active font as a CSS/canvas `font` shorthand (size + family).
+export function fontString(): string {
+  return `${FONT_SIZE}px ${activeFontFamily}`;
+}
 
 export function newId(): string {
   return crypto.randomUUID();
@@ -74,7 +131,7 @@ export function newId(): string {
 const measureCtx = document.createElement("canvas").getContext("2d")!;
 
 export function measureText(text: string): { w: number; h: number } {
-  measureCtx.font = FONT;
+  measureCtx.font = fontString();
   const lines = text.split("\n");
   let w = 0;
   for (const line of lines) {

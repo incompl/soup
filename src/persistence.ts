@@ -15,7 +15,7 @@ import { getCurrentWindow } from "@tauri-apps/api/window";
 import { ask, message, open as openDialog, save as saveDialog } from "@tauri-apps/plugin-dialog";
 import { createEffect, createSignal, onCleanup } from "solid-js";
 import { notify } from "./notification-store";
-import type { SceneElement } from "./scene";
+import { DEFAULT_DOC_SETTINGS, FONT_FAMILIES, type DocSettings, type SceneElement } from "./scene";
 import { markSaved, setScene, state } from "./store";
 
 const DOC_TYPE = "soup";
@@ -30,6 +30,9 @@ interface SoupDocument {
   type: typeof DOC_TYPE;
   version: number;
   elements: SceneElement[];
+  // Per-document look. Optional on disk so pre-settings files still load (they
+  // fall back to defaults — see coerceSettings).
+  settings?: DocSettings;
 }
 
 // Path of the file backing the current document, or null for an untitled
@@ -46,16 +49,26 @@ function serialize(): string {
     type: DOC_TYPE,
     version: DOC_VERSION,
     elements: state.elements,
+    settings: state.docSettings,
   };
   return JSON.stringify(doc, null, 2);
 }
 
-function parse(text: string): SceneElement[] {
+// Fill in and sanitize document settings from a parsed file, dropping anything
+// missing or unrecognized (e.g. an older/hand-edited file) back to defaults.
+function coerceSettings(raw: unknown): DocSettings {
+  const s = (raw ?? {}) as Partial<DocSettings>;
+  const lineStyle = s.lineStyle === "clean" ? "clean" : DEFAULT_DOC_SETTINGS.lineStyle;
+  const font = s.font && s.font in FONT_FAMILIES ? s.font : DEFAULT_DOC_SETTINGS.font;
+  return { lineStyle, font };
+}
+
+function parse(text: string): { elements: SceneElement[]; settings: DocSettings } {
   const doc = JSON.parse(text) as Partial<SoupDocument>;
   if (doc?.type !== DOC_TYPE || !Array.isArray(doc.elements)) {
     throw new Error("Not a soup document.");
   }
-  return doc.elements as SceneElement[];
+  return { elements: doc.elements as SceneElement[], settings: coerceSettings(doc.settings) };
 }
 
 function baseName(path: string): string {
@@ -128,8 +141,8 @@ async function reportError(action: string, err: unknown): Promise<void> {
 // Read + load a known path into the store, updating recents. Throws on IO or
 // parse failure so callers can report/clean up.
 async function loadFromPath(path: string): Promise<void> {
-  const elements = parse(await invoke<string>("read_document", { path }));
-  setScene(elements);
+  const { elements, settings } = parse(await invoke<string>("read_document", { path }));
+  setScene(elements, settings);
   setCurrentPath(path);
   addRecent(path);
 }

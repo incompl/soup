@@ -5,7 +5,7 @@
 
 use std::sync::Mutex;
 
-use tauri::menu::{Menu, MenuItem, PredefinedMenuItem, Submenu};
+use tauri::menu::{CheckMenuItem, Menu, MenuItem, PredefinedMenuItem, Submenu};
 use tauri::{
     AppHandle, Emitter, Manager, RunEvent, Runtime, WebviewUrl, WebviewWindowBuilder, Wry,
 };
@@ -19,6 +19,17 @@ struct PendingOpen(Mutex<Option<String>>);
 // Handle to the "Open Recent" submenu so `set_recent_files` can rebuild it at
 // runtime as the frontend's recent-files list (localStorage) changes.
 struct RecentMenu(Submenu<Wry>);
+
+// Handles to the Document menu's radio-style check items, so
+// `set_document_settings` can tick the one matching the open document as the
+// frontend's per-document settings change. Grouped by the setting they belong to.
+struct DocMenu<R: Runtime> {
+    line_rough: CheckMenuItem<R>,
+    line_clean: CheckMenuItem<R>,
+    font_sketch: CheckMenuItem<R>,
+    font_serif: CheckMenuItem<R>,
+    font_sans: CheckMenuItem<R>,
+}
 
 // Read a document's text. The path always comes from a native dialog or an OS
 // open request, so IO stays here on the OS boundary rather than via fs plugin.
@@ -77,6 +88,24 @@ fn write_settings(app: AppHandle, contents: String) -> Result<(), String> {
     std::fs::write(&path, contents).map_err(|e| e.to_string())
 }
 
+// Tick the Document menu's check items to match the frontend's per-document
+// settings (line style + font), so the menu always reflects the open document.
+// Menu mutation must happen on the main thread, so hop there. These are the two
+// radio groups: exactly one item is checked in each.
+#[tauri::command]
+fn set_document_settings(app: AppHandle, line_style: String, font: String) -> Result<(), String> {
+    let handle = app.clone();
+    app.run_on_main_thread(move || {
+        let doc = handle.state::<DocMenu<Wry>>();
+        let _ = doc.line_rough.set_checked(line_style == "rough");
+        let _ = doc.line_clean.set_checked(line_style == "clean");
+        let _ = doc.font_sketch.set_checked(font == "sketch");
+        let _ = doc.font_serif.set_checked(font == "serif");
+        let _ = doc.font_sans.set_checked(font == "sans");
+    })
+    .map_err(|e| e.to_string())
+}
+
 // Rebuild the Open Recent submenu from the frontend's list. Menu mutation must
 // happen on the main thread, so hop there. Item ids carry the full path
 // (`recent:<path>`); the click is routed back to the frontend in `on_menu_event`.
@@ -112,12 +141,41 @@ fn rebuild_recent<R: Runtime>(
     recent.append(&clear)
 }
 
+// Build the Document menu: two radio-style groups of check items driving the
+// per-document look (line style + font). Clicks emit an event the frontend
+// turns into a store change (see doc-menu.ts); the checkmarks are ticked back
+// via set_document_settings. The initial checks match the frontend defaults
+// (rough + sketch) so a fresh document reads right before any sync.
+fn build_document_menu<R: Runtime>(app: &AppHandle<R>) -> tauri::Result<(Submenu<R>, DocMenu<R>)> {
+    let line_rough = CheckMenuItem::with_id(app, "line:rough", "Rough", true, true, None::<&str>)?;
+    let line_clean = CheckMenuItem::with_id(app, "line:clean", "Clean", true, false, None::<&str>)?;
+    let line_style = Submenu::with_items(app, "Line Style", true, &[&line_rough, &line_clean])?;
+
+    let font_sketch = CheckMenuItem::with_id(app, "font:sketch", "Sketch", true, true, None::<&str>)?;
+    let font_serif = CheckMenuItem::with_id(app, "font:serif", "Serif", true, false, None::<&str>)?;
+    let font_sans = CheckMenuItem::with_id(app, "font:sans", "Sans-serif", true, false, None::<&str>)?;
+    let font = Submenu::with_items(app, "Font", true, &[&font_sketch, &font_serif, &font_sans])?;
+
+    let document = Submenu::with_items(app, "Document", true, &[&line_style, &font])?;
+    Ok((
+        document,
+        DocMenu {
+            line_rough,
+            line_clean,
+            font_sketch,
+            font_serif,
+            font_sans,
+        },
+    ))
+}
+
 // Build the native menu bar. File items carry ids + accelerators and are
 // handled by emitting an event to the frontend, which owns the scene and does
 // the actual serialize/parse. App/Edit use predefined items so the text editor
 // gets working cut/copy/paste and the window keeps ⌘Q etc. Returns the Open
-// Recent submenu so it can be stashed for later rebuilds.
-fn build_menu<R: Runtime>(app: &AppHandle<R>) -> tauri::Result<(Menu<R>, Submenu<R>)> {
+// Recent submenu and the Document menu's check items so they can be stashed for
+// later rebuilds/ticks.
+fn build_menu<R: Runtime>(app: &AppHandle<R>) -> tauri::Result<(Menu<R>, Submenu<R>, DocMenu<R>)> {
     let new = MenuItem::with_id(app, "new", "New", true, Some("CmdOrCtrl+N"))?;
     let open = MenuItem::with_id(app, "open", "Open…", true, Some("CmdOrCtrl+O"))?;
     let recent = Submenu::with_id(app, "open-recent", "Open Recent", true)?;
@@ -152,12 +210,18 @@ fn build_menu<R: Runtime>(app: &AppHandle<R>) -> tauri::Result<(Menu<R>, Submenu
     // App-menu "Settings…" (Cmd/Ctrl+,) opens the native Settings window.
     let settings = MenuItem::with_id(app, "settings", "Settings…", true, Some("CmdOrCtrl+,"))?;
 
+    // "Acknowledgements…" opens a dialog crediting the bundled OFL fonts; the
+    // frontend owns the text (see acknowledgements.ts).
+    let acknowledgements =
+        MenuItem::with_id(app, "acknowledgements", "Acknowledgements…", true, None::<&str>)?;
+
     let app_menu = Submenu::with_items(
         app,
         "soup",
         true,
         &[
             &PredefinedMenuItem::about(app, None, None)?,
+            &acknowledgements,
             &PredefinedMenuItem::separator(app)?,
             &settings,
             &PredefinedMenuItem::separator(app)?,
@@ -195,8 +259,10 @@ fn build_menu<R: Runtime>(app: &AppHandle<R>) -> tauri::Result<(Menu<R>, Submenu
         ],
     )?;
 
-    let menu = Menu::with_items(app, &[&app_menu, &file, &edit])?;
-    Ok((menu, recent))
+    let (document, doc_menu) = build_document_menu(app)?;
+
+    let menu = Menu::with_items(app, &[&app_menu, &file, &edit, &document])?;
+    Ok((menu, recent, doc_menu))
 }
 
 // Open the Settings window, or just focus it if it's already open. Its content
@@ -239,13 +305,15 @@ pub fn run() {
             take_pending_open,
             set_recent_files,
             read_settings,
-            write_settings
+            write_settings,
+            set_document_settings
         ])
         .setup(|app| {
             let handle = app.handle();
-            let (menu, recent) = build_menu(handle)?;
+            let (menu, recent, doc_menu) = build_menu(handle)?;
             app.set_menu(menu)?;
             app.manage(RecentMenu(recent));
+            app.manage(doc_menu);
             // Windows/Linux deliver the launched file as an argument; macOS
             // uses the `Opened` event handled in `run` instead.
             if let Some(path) = std::env::args().skip(1).find(|a| a.ends_with(".soup")) {
@@ -261,6 +329,7 @@ pub fn run() {
                         eprintln!("failed to open settings window: {e}");
                     }
                 }
+                "acknowledgements" => drop(app.emit("menu:acknowledgements", ())),
                 "new" => drop(app.emit("menu:new", ())),
                 "open" => drop(app.emit("menu:open", ())),
                 "save" => drop(app.emit("menu:save", ())),
@@ -268,6 +337,14 @@ pub fn run() {
                 "export-png" => drop(app.emit("menu:export-png", ())),
                 "export-svg" => drop(app.emit("menu:export-svg", ())),
                 "recent-clear" => drop(app.emit("menu:clear-recent", ())),
+                // Document look. The frontend owns the setting; it updates the
+                // store and ticks the matching check item back via
+                // set_document_settings, so we only forward the choice here.
+                "line:rough" => drop(app.emit("menu:set-line-style", "rough")),
+                "line:clean" => drop(app.emit("menu:set-line-style", "clean")),
+                "font:sketch" => drop(app.emit("menu:set-font", "sketch")),
+                "font:serif" => drop(app.emit("menu:set-font", "serif")),
+                "font:sans" => drop(app.emit("menu:set-font", "sans")),
                 "undo" => drop(app.emit("menu:undo", ())),
                 "redo" => drop(app.emit("menu:redo", ())),
                 "cut" => drop(app.emit("menu:cut", ())),

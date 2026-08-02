@@ -1,7 +1,8 @@
 import { createEffect, createSignal, onCleanup, onMount, Show } from "solid-js";
-import { FONT, FONT_SIZE, LINE_HEIGHT, newId, elementAt, elementsInBox, handleAt, nearestAnchor, type AnchorPos, type HandlePos, type SceneElement } from "./scene";
+import { fontString, FONT_SIZE, LINE_HEIGHT, newId, elementAt, elementsInBox, handleAt, nearestAnchor, type AnchorPos, type HandlePos, type SceneElement } from "./scene";
 import { renderScene } from "./renderer";
 import { initEditMenu } from "./edit-menu";
+import { fontsReady } from "./fonts";
 import { settings } from "./settings-store";
 import { toolForKey } from "./shortcuts";
 import {
@@ -81,17 +82,18 @@ const CLICK_SLOP_PX = 4;
 // y + FONT_SIZE (see renderer drawElement), i.e. with no leading above it. A
 // textarea instead centers each line in a LINE_HEIGHT box, adding half-leading
 // above the first line, so its glyphs sit a hair lower. This nudges the editor
-// up by that exact difference — derived from the font's real ascent/descent so
-// it's font-agnostic — so editing text lands right where the canvas paints it.
-// (Every line follows, since both step by LINE_HEIGHT.)
-const TEXT_EDITOR_DY = (() => {
-  const ctx = document.createElement("canvas").getContext("2d")!;
-  ctx.font = FONT;
-  const m = ctx.measureText("Mg");
+// up by that exact difference — derived from the active font's real
+// ascent/descent — so editing text lands right where the canvas paints it.
+// (Every line follows, since both step by LINE_HEIGHT.) Computed per-open rather
+// than once, since the document's font (and thus its metrics) can change.
+const metricsCtx = document.createElement("canvas").getContext("2d")!;
+function textEditorDy(): number {
+  metricsCtx.font = fontString();
+  const m = metricsCtx.measureText("Mg");
   // Baseline offset from the top of the textarea's first line box.
   const baselineFromTop = LINE_HEIGHT / 2 + (m.fontBoundingBoxAscent - m.fontBoundingBoxDescent) / 2;
   return FONT_SIZE - baselineFromTop;
-})();
+}
 
 // The draggable ".titlebar" strip (see App.css) sits above the canvas and
 // swallows pointer events in the top band. An element moved entirely under
@@ -220,6 +222,13 @@ export default function Canvas() {
     const { w, h, dpr } = size();
     const ctx = canvasEl.getContext("2d");
     if (!ctx || w === 0) return;
+    // Track the font too: fontString() (used deep in the renderer) reads the
+    // scene module's active font, not a signal, so touch it here to repaint on
+    // a Font-menu change. lineStyle is passed through below.
+    void state.docSettings.font;
+    // Repaint once the bundled fonts finish loading, so text drawn with the
+    // momentary system fallback re-measures and re-renders in the real font.
+    void fontsReady();
     renderScene(
       ctx,
       state.elements,
@@ -227,6 +236,9 @@ export default function Canvas() {
       w,
       h,
       dpr,
+      // Read as a tracked dependency so a Document-menu change repaints; the
+      // active font is read the same way inside the scene module's fontString.
+      state.docSettings.lineStyle,
       labelEdit()?.id ?? null,
       labelText(),
       // Reveal attachment spots while placing an endpoint, and also whenever the
@@ -730,8 +742,8 @@ export default function Canvas() {
             class="text-editor"
             style={{
               left: `${draft().x}px`,
-              top: `${draft().y + TEXT_EDITOR_DY}px`,
-              font: FONT,
+              top: `${draft().y + textEditorDy()}px`,
+              font: fontString(),
               "line-height": `${LINE_HEIGHT}px`,
               // Show the selection border around the editor, drawn here (not on
               // the canvas, which hides the element while its editor is up) so
@@ -755,7 +767,7 @@ export default function Canvas() {
             style={{
               left: `${edit().cx}px`,
               top: `${edit().cy}px`,
-              font: FONT,
+              font: fontString(),
               "line-height": `${LINE_HEIGHT}px`,
             }}
             onInput={onLabelInput}

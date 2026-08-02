@@ -10,12 +10,13 @@ import {
   ANCHOR_DOT_R,
   elementAnchors,
   elementHandles,
-  FONT,
+  fontString,
   FONT_SIZE,
   HANDLE_SIZE,
   LINE_HEIGHT,
   measureText,
   type AnchorPos,
+  type LineStyle,
   type SceneElement,
 } from "./scene";
 
@@ -52,6 +53,25 @@ export const ARROW_OPTS: Options = {
   disableMultiStroke: true,
 };
 
+// The document's "Line Style" setting picks between the hand-drawn look above
+// and a clean one: roughness 0 (no jitter) with the sketch-only flourishes
+// (bowing, the doubled stroke) switched off, so shapes and shafts draw as
+// straight, single geometry. Shared by the canvas renderer and the SVG export
+// (via the opts helpers below) so the two never diverge.
+const CLEAN_OVERRIDES: Options = { roughness: 0, bowing: 0, disableMultiStroke: true };
+
+// Per-element rough options for a shape, folding in the line style and the
+// element's stable seed. The single source of truth for both draw paths.
+export function shapeOptsFor(lineStyle: LineStyle, id: string): Options {
+  const base = lineStyle === "clean" ? { ...SHAPE_OPTS, ...CLEAN_OVERRIDES } : SHAPE_OPTS;
+  return { ...base, seed: elementSeed(id) };
+}
+
+export function arrowOptsFor(lineStyle: LineStyle, id: string): Options {
+  const base = lineStyle === "clean" ? { ...ARROW_OPTS, ...CLEAN_OVERRIDES } : ARROW_OPTS;
+  return { ...base, seed: elementSeed(id) };
+}
+
 // One RoughCanvas per underlying <canvas>; cheap to reuse across renders.
 const roughByCanvas = new WeakMap<HTMLCanvasElement, RoughCanvas>();
 
@@ -80,6 +100,8 @@ export function renderScene(
   width: number,
   height: number,
   dpr: number,
+  // The document's line style ("rough"/"clean"), applied to every shape/arrow.
+  lineStyle: LineStyle,
   // Element whose label is being edited in the DOM textarea right now, plus
   // the live text in that textarea. While editing, the canvas skips painting
   // the label (the textarea shows it) but still breaks the arrow shaft around
@@ -104,7 +126,7 @@ export function renderScene(
   const rc = roughFor(ctx);
   for (const el of elements) {
     if (el.id === editingTextId) continue;
-    drawElement(ctx, rc, el, el.id === editingLabelId ? editingLabelText : null);
+    drawElement(ctx, rc, el, lineStyle, el.id === editingLabelId ? editingLabelText : null);
   }
 
   // Outline every selected element; only show resize handles when exactly one
@@ -163,6 +185,7 @@ function drawElement(
   ctx: CanvasRenderingContext2D,
   rc: RoughCanvas,
   el: SceneElement,
+  lineStyle: LineStyle,
   // null when not being edited; otherwise the live textarea text (possibly
   // "") to break around instead of the committed label, which the DOM editor
   // is painting on top.
@@ -171,14 +194,14 @@ function drawElement(
   const editing = editingText !== null;
   switch (el.type) {
     case "rect": {
-      rc.rectangle(el.x, el.y, el.w, el.h, { ...SHAPE_OPTS, seed: elementSeed(el.id) });
+      rc.rectangle(el.x, el.y, el.w, el.h, shapeOptsFor(lineStyle, el.id));
       if (!editing && el.label) {
         drawLabel(ctx, el.label, el.x + el.w / 2, el.y + el.h / 2);
       }
       break;
     }
     case "arrow": {
-      const opts = { ...ARROW_OPTS, seed: elementSeed(el.id) };
+      const opts = arrowOptsFor(lineStyle, el.id);
       // Break around the live text while editing, else the committed label.
       const breakText = editing ? editingText : el.label;
       const dx = el.x2 - el.x1;
@@ -218,7 +241,7 @@ function drawElement(
       // Text stays crisp — no roughjs.
       ctx.strokeStyle = STROKE;
       ctx.fillStyle = STROKE;
-      ctx.font = FONT;
+      ctx.font = fontString();
       ctx.textBaseline = "alphabetic";
       const lines = el.text.split("\n");
       lines.forEach((line, i) => {
@@ -233,7 +256,7 @@ function drawElement(
 // afterward so the standalone-text branch (top-left, alphabetic) is unaffected.
 function drawLabel(ctx: CanvasRenderingContext2D, text: string, cx: number, cy: number) {
   ctx.fillStyle = STROKE;
-  ctx.font = FONT;
+  ctx.font = fontString();
   ctx.textAlign = "center";
   ctx.textBaseline = "middle";
   const lines = text.split("\n");
