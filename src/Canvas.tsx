@@ -2,6 +2,8 @@ import { createEffect, createSignal, onCleanup, onMount, Show } from "solid-js";
 import { FONT, LINE_HEIGHT, newId, elementAt, elementsInBox, handleAt, nearestAnchor, type AnchorSide, type HandlePos, type SceneElement } from "./scene";
 import { renderScene } from "./renderer";
 import { initEditMenu } from "./edit-menu";
+import { settings } from "./settings-store";
+import { toolForKey } from "./shortcuts";
 import {
   addElement,
   removeElements,
@@ -216,23 +218,14 @@ export default function Canvas() {
 
   function onKeyDown(e: KeyboardEvent) {
     if (e.target instanceof HTMLTextAreaElement || e.target instanceof HTMLInputElement) return;
+    // Tool shortcuts depend on the active scheme (normal letters vs. home-row);
+    // number keys 1-4 work in either. See shortcuts.ts.
+    const tool = toolForKey(e.key, settings.shortcutScheme);
+    if (tool) {
+      setTool(tool);
+      return;
+    }
     switch (e.key) {
-      case "v":
-      case "1":
-        setTool("select");
-        break;
-      case "r":
-      case "2":
-        setTool("rect");
-        break;
-      case "a":
-      case "3":
-        setTool("arrow");
-        break;
-      case "t":
-      case "4":
-        setTool("text");
-        break;
       case "Delete":
       case "Backspace":
         if (state.selectedIds.length) removeElements(state.selectedIds);

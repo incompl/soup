@@ -1,3 +1,4 @@
+import { fileURLToPath } from "node:url";
 import { defineConfig } from "vite";
 import solid from "vite-plugin-solid";
 import Icons from "unplugin-icons/vite";
@@ -8,6 +9,17 @@ const host = process.env.TAURI_DEV_HOST;
 // https://vite.dev/config/
 export default defineConfig(async () => ({
   plugins: [solid(), Icons({ compiler: "solid" })],
+
+  // Two HTML entry points: the main canvas window and the standalone Settings
+  // window (opened natively from the app menu — see lib.rs).
+  build: {
+    rollupOptions: {
+      input: {
+        main: fileURLToPath(new URL("index.html", import.meta.url)),
+        settings: fileURLToPath(new URL("settings.html", import.meta.url)),
+      },
+    },
+  },
 
   // Vite options tailored for Tauri development and only applied in `tauri dev` or `tauri build`
   //

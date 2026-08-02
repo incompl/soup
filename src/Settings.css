@@ -1,0 +1,78 @@
+/* The Settings window fills its own native window (settings.html); the OS title
+   bar supplies the chrome, so this is just the body. */
+:global(html),
+:global(body) {
+  margin: 0;
+  background: #fff;
+}
+
+.settings {
+  box-sizing: border-box;
+  min-height: 100vh;
+  padding: 18px 22px 22px;
+  background: #fff;
+  color: #1e1e1e;
+  font: 14px/1.4 -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
+  user-select: none;
+}
+
+.settings-row {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 16px;
+}
+
+.settings-row label {
+  font-size: 14px;
+}
+
+.settings-row select {
+  font: inherit;
+  font-size: 14px;
+  padding: 4px 8px;
+  border: 1px solid #d8d6cc;
+  border-radius: 7px;
+  background: #fafaf8;
+  color: #1e1e1e;
+  cursor: pointer;
+}
+
+/* Live preview of the tool bindings under the selected scheme. */
+.settings-keymap {
+  list-style: none;
+  margin: 16px 0 0;
+  padding: 12px 0 0;
+  border-top: 1px solid #f0f0ee;
+  font-size: 13px;
+  color: #55554f;
+}
+
+.settings-keymap li {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 3px 0;
+}
+
+.settings-keymap li span:first-child {
+  flex: 1;
+}
+
+.settings-keymap kbd {
+  min-width: 20px;
+  padding: 1px 6px;
+  text-align: center;
+  font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
+  font-size: 12px;
+  background: #f4f4f2;
+  border: 1px solid #d8d6cc;
+  border-bottom-width: 2px;
+  border-radius: 5px;
+  color: #1e1e1e;
+}
+
+.settings-keymap-alt {
+  color: #a0a09a;
+  font-size: 12px;
+}

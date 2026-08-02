@@ -5,7 +5,9 @@
 use std::sync::Mutex;
 
 use tauri::menu::{Menu, MenuItem, PredefinedMenuItem, Submenu};
-use tauri::{AppHandle, Emitter, Manager, RunEvent, Runtime, Wry};
+use tauri::{
+    AppHandle, Emitter, Manager, RunEvent, Runtime, WebviewUrl, WebviewWindowBuilder, Wry,
+};
 
 // A `.soup` path the app was asked to open by the OS (double-click / "Open
 // With") before the frontend was listening. The frontend drains it on
@@ -34,6 +36,37 @@ fn write_document(path: String, contents: String) -> Result<(), String> {
 #[tauri::command]
 fn take_pending_open(state: tauri::State<PendingOpen>) -> Option<String> {
     state.0.lock().unwrap().take()
+}
+
+// Path to the persisted user-preferences file, under the OS per-app config dir
+// (macOS: ~/Library/Application Support/<bundle-id>/; Linux: ~/.config/<app>/;
+// Windows: %APPDATA%\<app>\). Unlike `.soup` documents (dialog-chosen paths),
+// settings live at a fixed, app-owned location — so a plain file here, inspectable
+// and durable, rather than webview localStorage which WebKit can silently evict.
+fn settings_path(app: &AppHandle) -> Result<std::path::PathBuf, String> {
+    let dir = app.path().app_config_dir().map_err(|e| e.to_string())?;
+    Ok(dir.join("settings.json"))
+}
+
+// Read the settings file, or None on first run (file not yet written). A missing
+// file is a normal state, not an error; other IO failures propagate.
+#[tauri::command]
+fn read_settings(app: AppHandle) -> Result<Option<String>, String> {
+    match std::fs::read_to_string(settings_path(&app)?) {
+        Ok(text) => Ok(Some(text)),
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => Ok(None),
+        Err(e) => Err(e.to_string()),
+    }
+}
+
+// Write the settings file, creating the config dir on first save.
+#[tauri::command]
+fn write_settings(app: AppHandle, contents: String) -> Result<(), String> {
+    let path = settings_path(&app)?;
+    if let Some(dir) = path.parent() {
+        std::fs::create_dir_all(dir).map_err(|e| e.to_string())?;
+    }
+    std::fs::write(&path, contents).map_err(|e| e.to_string())
 }
 
 // Rebuild the Open Recent submenu from the frontend's list. Menu mutation must
@@ -100,12 +133,17 @@ fn build_menu<R: Runtime>(app: &AppHandle<R>) -> tauri::Result<(Menu<R>, Submenu
         ],
     )?;
 
+    // App-menu "Settings…" (Cmd/Ctrl+,) opens the native Settings window.
+    let settings = MenuItem::with_id(app, "settings", "Settings…", true, Some("CmdOrCtrl+,"))?;
+
     let app_menu = Submenu::with_items(
         app,
         "soup",
         true,
         &[
             &PredefinedMenuItem::about(app, None, None)?,
+            &PredefinedMenuItem::separator(app)?,
+            &settings,
             &PredefinedMenuItem::separator(app)?,
             &PredefinedMenuItem::hide(app, None)?,
             &PredefinedMenuItem::hide_others(app, None)?,
@@ -143,6 +181,27 @@ fn build_menu<R: Runtime>(app: &AppHandle<R>) -> tauri::Result<(Menu<R>, Submenu
     Ok((menu, recent))
 }
 
+// Open the Settings window, or just focus it if it's already open. Its content
+// is the frontend's settings.html, shown in its own native window (with a normal
+// title bar, unlike the main window's overlay chrome) rather than as an in-canvas
+// overlay.
+fn open_settings_window<R: Runtime>(app: &AppHandle<R>) -> tauri::Result<()> {
+    if let Some(win) = app.get_webview_window("settings") {
+        win.show()?;
+        win.set_focus()?;
+        return Ok(());
+    }
+    WebviewWindowBuilder::new(app, "settings", WebviewUrl::App("settings.html".into()))
+        .title("Settings")
+        .inner_size(360.0, 300.0)
+        .resizable(false)
+        .maximizable(false)
+        .minimizable(false)
+        .center()
+        .build()?;
+    Ok(())
+}
+
 // Buffer a `.soup` path for the frontend to open, and nudge it in case it's
 // already running (warm open). Called for both OS `Opened` events and argv.
 fn queue_open<R: Runtime>(app: &AppHandle<R>, path: String) {
@@ -159,7 +218,9 @@ pub fn run() {
             read_document,
             write_document,
             take_pending_open,
-            set_recent_files
+            set_recent_files,
+            read_settings,
+            write_settings
         ])
         .setup(|app| {
             let handle = app.handle();
@@ -176,6 +237,11 @@ pub fn run() {
         .on_menu_event(|app, event| {
             let id = event.id().0.as_str();
             match id {
+                "settings" => {
+                    if let Err(e) = open_settings_window(app) {
+                        eprintln!("failed to open settings window: {e}");
+                    }
+                }
                 "new" => drop(app.emit("menu:new", ())),
                 "open" => drop(app.emit("menu:open", ())),
                 "save" => drop(app.emit("menu:save", ())),
