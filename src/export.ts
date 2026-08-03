@@ -29,7 +29,7 @@ import {
   elementBounds,
   fontFamily,
   FONT_SIZE,
-  LINE_HEIGHT,
+  lineHeightFor,
   measureText,
   type LineStyle,
   type SceneElement,
@@ -69,7 +69,7 @@ function union(a: Box, b: Box): Box {
 function contentBounds(el: SceneElement): Box {
   const base = elementBounds(el);
   if (el.type === "arrow" && el.label) {
-    const { w, h } = measureText(el.label);
+    const { w, h } = measureText(el.label, el.fontSize);
     const cx = (el.x1 + el.x2) / 2;
     const cy = (el.y1 + el.y2) / 2;
     return union(base, { x: cx - w / 2, y: cy - h / 2, w, h });
@@ -94,6 +94,8 @@ function svgText(
   x: number,
   y: number,
   anchor: "start" | "middle",
+  size: number,
+  color: string,
   // "central" mirrors the canvas textBaseline "middle" used for centered
   // labels; undefined leaves the SVG default (alphabetic) for standalone text.
   baseline?: "central"
@@ -102,8 +104,8 @@ function svgText(
   node.setAttribute("x", String(x));
   node.setAttribute("y", String(y));
   node.setAttribute("font-family", fontFamily());
-  node.setAttribute("font-size", String(FONT_SIZE));
-  node.setAttribute("fill", STROKE);
+  node.setAttribute("font-size", String(size));
+  node.setAttribute("fill", color);
   if (anchor !== "start") node.setAttribute("text-anchor", anchor);
   if (baseline) node.setAttribute("dominant-baseline", baseline);
   node.textContent = text;
@@ -112,11 +114,20 @@ function svgText(
 
 // Emit a centered multi-line label (rect + arrow labels), mirroring
 // renderer.ts's drawLabel: the block is vertically centered on (cx, cy).
-function appendLabel(doc: SVGSVGElement, into: SVGElement, text: string, cx: number, cy: number) {
+function appendLabel(
+  doc: SVGSVGElement,
+  into: SVGElement,
+  text: string,
+  cx: number,
+  cy: number,
+  size: number,
+  color: string
+) {
+  const lh = lineHeightFor(size);
   const lines = text.split("\n");
-  const top = cy - ((lines.length - 1) * LINE_HEIGHT) / 2;
+  const top = cy - ((lines.length - 1) * lh) / 2;
   lines.forEach((line, i) => {
-    into.appendChild(svgText(doc, line, cx, top + i * LINE_HEIGHT, "middle", "central"));
+    into.appendChild(svgText(doc, line, cx, top + i * lh, "middle", size, color, "central"));
   });
 }
 
@@ -129,14 +140,16 @@ function appendElement(
   el: SceneElement,
   lineStyle: LineStyle
 ) {
+  const size = el.fontSize ?? FONT_SIZE;
+  const ink = el.color ?? STROKE;
   switch (el.type) {
     case "rect": {
-      into.appendChild(rc.rectangle(el.x, el.y, el.w, el.h, shapeOptsFor(lineStyle, el.id)));
-      if (el.label) appendLabel(doc, into, el.label, el.x + el.w / 2, el.y + el.h / 2);
+      into.appendChild(rc.rectangle(el.x, el.y, el.w, el.h, shapeOptsFor(lineStyle, el.id, el.color)));
+      if (el.label) appendLabel(doc, into, el.label, el.x + el.w / 2, el.y + el.h / 2, size, ink);
       break;
     }
     case "arrow": {
-      const opts = arrowOptsFor(lineStyle, el.id);
+      const opts = arrowOptsFor(lineStyle, el.id, el.color);
       const dx = el.x2 - el.x1;
       const dy = el.y2 - el.y1;
       const len = Math.hypot(dx, dy) || 1;
@@ -146,7 +159,7 @@ function appendElement(
       const my = (el.y1 + el.y2) / 2;
       if (el.label) {
         // Break the shaft around the label, exactly as the canvas does.
-        const { w, h } = measureText(el.label);
+        const { w, h } = measureText(el.label, size);
         const hw = w / 2 + LABEL_PAD;
         const hh = h / 2 + LABEL_PAD;
         const sx = Math.abs(ux) < 1e-6 ? Infinity : hw / Math.abs(ux);
@@ -159,24 +172,42 @@ function appendElement(
       } else {
         into.appendChild(rc.line(el.x1, el.y1, el.x2, el.y2, opts));
       }
-      const angle = Math.atan2(dy, dx);
-      for (const side of [-1, 1]) {
-        const a = angle + side * (Math.PI / 6);
-        into.appendChild(
-          rc.line(el.x2, el.y2, el.x2 - ARROWHEAD_LEN * Math.cos(a), el.y2 - ARROWHEAD_LEN * Math.sin(a), opts)
-        );
-      }
-      if (el.label) appendLabel(doc, into, el.label, mx, my);
+      // Heads default to end-only when absent, mirroring drawElement.
+      if (el.endHead !== false) appendArrowhead(rc, into, el.x2, el.y2, dx, dy, opts);
+      if (el.startHead) appendArrowhead(rc, into, el.x1, el.y1, -dx, -dy, opts);
+      if (el.label) appendLabel(doc, into, el.label, mx, my, size, ink);
       break;
     }
     case "text": {
       // Top-left origin, alphabetic baseline — same as drawElement's text case.
+      const lh = lineHeightFor(size);
       const lines = el.text.split("\n");
       lines.forEach((line, i) => {
-        into.appendChild(svgText(doc, line, el.x, el.y + FONT_SIZE + i * LINE_HEIGHT, "start"));
+        into.appendChild(svgText(doc, line, el.x, el.y + size + i * lh, "start", size, ink));
       });
       break;
     }
+  }
+}
+
+// One arrowhead into the SVG group, mirroring renderer.ts's drawArrowhead: two
+// barbs at (tipX, tipY) opening back along (dx, dy). Pass the reversed direction
+// for a tail head.
+function appendArrowhead(
+  rc: ReturnType<typeof rough.svg>,
+  into: SVGElement,
+  tipX: number,
+  tipY: number,
+  dx: number,
+  dy: number,
+  opts: Parameters<ReturnType<typeof rough.svg>["line"]>[4]
+) {
+  const angle = Math.atan2(dy, dx);
+  for (const side of [-1, 1]) {
+    const a = angle + side * (Math.PI / 6);
+    into.appendChild(
+      rc.line(tipX, tipY, tipX - ARROWHEAD_LEN * Math.cos(a), tipY - ARROWHEAD_LEN * Math.sin(a), opts)
+    );
   }
 }
 

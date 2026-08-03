@@ -146,6 +146,11 @@ body,
   white-space: pre;
   overflow: hidden;
   resize: none;
+  /* The box is autosized to hug its content (see autosizeText), which collapses
+     to ~0 when empty and would clip the caret. Keep one glyph's worth of width
+     (scaling with the font) so the caret — and thus "you're editing" — always
+     shows; real text is always wider, so this never affects a filled editor. */
+  min-width: 1ch;
 }
 
 /* Label editor for a rect/arrow, anchored on the shape's center point and
@@ -167,4 +172,59 @@ body,
   white-space: pre;
   overflow: hidden;
   resize: none;
+  /* See .text-editor: keep a glyph's width when empty so the caret shows. */
+  min-width: 1ch;
+}
+
+/* Property popovers (font-size presets, ink grid), opened by clicking a
+   selection badge. Above the editors so they float over everything. Positioned
+   in canvas coordinates from Canvas.tsx. */
+.size-popover,
+.ink-grid {
+  position: absolute;
+  z-index: 7;
+  background: #ffffff;
+  border: 1px solid #e2e2e2;
+  border-radius: 8px;
+  box-shadow: 0 6px 20px rgba(0, 0, 0, 0.14);
+}
+
+.size-popover {
+  display: flex;
+  gap: 3px;
+  padding: 4px;
+}
+
+.size-option {
+  min-width: 30px;
+  padding: 5px 8px;
+  border: none;
+  border-radius: 5px;
+  background: transparent;
+  color: #1e1e1e;
+  font: 500 13px ui-sans-serif, system-ui, sans-serif;
+  cursor: pointer;
+}
+
+.size-option:hover {
+  background: #f0f0f0;
+}
+
+.size-option.active {
+  background: #1e1e1e;
+  color: #ffffff;
+}
+
+.ink-swatch {
+  position: absolute;
+  padding: 0;
+  border: 1px solid rgba(0, 0, 0, 0.15);
+  border-radius: 4px;
+  cursor: pointer;
+}
+
+/* Ring the swatch under the pointer (drag preview) or the current ink. */
+.ink-swatch.hover,
+.ink-swatch.active {
+  box-shadow: 0 0 0 2px #ffffff, 0 0 0 3.5px #f74f4f;
 }

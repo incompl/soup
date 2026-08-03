@@ -4,7 +4,18 @@
 
 export type Tool = "select" | "rect" | "arrow" | "text";
 
-export interface RectElement {
+// Optional look shared by every element type. All absent at their defaults so a
+// plain shape stays clean in the saved document (see how `label`/bindings are
+// kept out too): color absent ⇒ STROKE ink, fontSize absent ⇒ FONT_SIZE.
+export interface ElementStyle {
+  // The element's ink: rect/arrow stroke (and arrowheads) + its own label; a
+  // text element's fill. Absent ⇒ the default STROKE.
+  color?: string;
+  // Size of this element's text/label in px. Absent ⇒ FONT_SIZE.
+  fontSize?: number;
+}
+
+export interface RectElement extends ElementStyle {
   id: string;
   type: "rect";
   x: number;
@@ -34,13 +45,18 @@ export interface Binding {
   ny: number;
 }
 
-export interface ArrowElement {
+export interface ArrowElement extends ElementStyle {
   id: string;
   type: "arrow";
   x1: number;
   y1: number;
   x2: number;
   y2: number;
+  // Which ends carry an arrowhead. Absent ⇒ the classic single head at the end
+  // (start=false, end=true). Toggled per-end by clicking an endpoint handle
+  // without dragging it (see Canvas onPointerUp).
+  startHead?: boolean;
+  endHead?: boolean;
   // Optional centered label. The shaft "breaks" around it while set, and
   // rejoins once cleared. Absent (not "") when empty, so it stays out of the
   // saved document — see commitLabel in Canvas.tsx.
@@ -53,7 +69,7 @@ export interface ArrowElement {
   endBinding?: Binding;
 }
 
-export interface TextElement {
+export interface TextElement extends ElementStyle {
   id: string;
   type: "text";
   x: number;
@@ -119,9 +135,16 @@ export function fontFamily(): string {
   return activeFontFamily;
 }
 
-// The active font as a CSS/canvas `font` shorthand (size + family).
-export function fontString(): string {
-  return `${FONT_SIZE}px ${activeFontFamily}`;
+// The active font as a CSS/canvas `font` shorthand at the given size (defaulting
+// to the base FONT_SIZE), in the document's active family.
+export function fontString(size: number = FONT_SIZE): string {
+  return `${size}px ${activeFontFamily}`;
+}
+
+// Line height for a given font size, keeping the base LINE_HEIGHT/FONT_SIZE
+// ratio so resized text keeps the same leading proportion.
+export function lineHeightFor(size: number = FONT_SIZE): number {
+  return size * (LINE_HEIGHT / FONT_SIZE);
 }
 
 export function newId(): string {
@@ -130,14 +153,14 @@ export function newId(): string {
 
 const measureCtx = document.createElement("canvas").getContext("2d")!;
 
-export function measureText(text: string): { w: number; h: number } {
-  measureCtx.font = fontString();
+export function measureText(text: string, size: number = FONT_SIZE): { w: number; h: number } {
+  measureCtx.font = fontString(size);
   const lines = text.split("\n");
   let w = 0;
   for (const line of lines) {
     w = Math.max(w, measureCtx.measureText(line).width);
   }
-  return { w, h: lines.length * LINE_HEIGHT };
+  return { w, h: lines.length * lineHeightFor(size) };
 }
 
 function distToSegment(px: number, py: number, x1: number, y1: number, x2: number, y2: number): number {
@@ -161,7 +184,7 @@ export function hitTest(el: SceneElement, px: number, py: number): boolean {
       // its centered box as part of the arrow — clicking the text selects (and
       // double-clicking edits) the arrow.
       if (el.label) {
-        const { w, h } = measureText(el.label);
+        const { w, h } = measureText(el.label, el.fontSize);
         const cx = (el.x1 + el.x2) / 2;
         const cy = (el.y1 + el.y2) / 2;
         return (
@@ -174,7 +197,7 @@ export function hitTest(el: SceneElement, px: number, py: number): boolean {
       return false;
     }
     case "text": {
-      const { w, h } = measureText(el.text);
+      const { w, h } = measureText(el.text, el.fontSize);
       return px >= el.x - pad && px <= el.x + w + pad && py >= el.y - pad && py <= el.y + h + pad;
     }
   }
@@ -202,7 +225,7 @@ export function elementBounds(el: SceneElement): { x: number; y: number; w: numb
         h: Math.abs(el.y2 - el.y1),
       };
     case "text": {
-      const { w, h } = measureText(el.text);
+      const { w, h } = measureText(el.text, el.fontSize);
       return { x: el.x, y: el.y, w, h };
     }
   }
@@ -280,6 +303,119 @@ export function handleAt(el: SceneElement, px: number, py: number): HandlePos | 
   return null;
 }
 
+// --- Property badges ---------------------------------------------------------
+//
+// Two tiny controls that ride above a selection's top-right corner (one element
+// or a whole multi-selection), kept about handle-sized so they barely add to the
+// box's footprint:
+//   - "font": drag to scale the text size, or click for a preset menu.
+//   - "color": drag over the ink grid, or click to open it.
+// A change applies to every selected element. Like elementHandles/handleAt, this
+// is the single source of truth shared by the renderer (which draws them) and
+// Canvas hit-testing (which grabs them).
+
+export type BadgeKind = "font" | "color";
+
+export interface Badge {
+  kind: BadgeKind;
+  // Center of the drawn badge, in scene pixels.
+  x: number;
+  y: number;
+}
+
+// Drawn side length of a badge square, and the half-extent of its (larger,
+// invisible) grab target.
+export const BADGE_SIZE = 16;
+const BADGE_GAP = 5;
+const BADGE_GRAB = BADGE_SIZE / 2 + 3;
+// Clearance from the selection box's top edge (drawn `pad`=6 outside the bounds)
+// up to the badge centers.
+const BADGE_MARGIN = 3;
+
+// Whether an element has text whose size the font badge would control: a text
+// element with content, or a rect/arrow carrying a label.
+function hasText(el: SceneElement): boolean {
+  return el.type === "text" ? el.text.length > 0 : !!el.label;
+}
+
+// Badge positions above a box's top-right corner. Color is always offered and
+// sits rightmost; the font badge (only when `showFont`) sits to its left.
+function badgesForBox(box: { x: number; y: number; w: number; h: number }, showFont: boolean): Badge[] {
+  const pad = 6; // matches drawSelection's outset
+  const cy = box.y - pad - BADGE_SIZE / 2 - BADGE_MARGIN;
+  const colorX = box.x + box.w + pad - BADGE_SIZE / 2;
+  const badges: Badge[] = [];
+  if (showFont) badges.push({ kind: "font", x: colorX - BADGE_SIZE - BADGE_GAP, y: cy });
+  badges.push({ kind: "color", x: colorX, y: cy });
+  return badges;
+}
+
+// Union of the given elements' bounding boxes, or null when there are none.
+export function unionBounds(
+  els: readonly SceneElement[]
+): { x: number; y: number; w: number; h: number } | null {
+  let box: { x: number; y: number; w: number; h: number } | null = null;
+  for (const el of els) {
+    const b = elementBounds(el);
+    if (!box) {
+      box = { ...b };
+    } else {
+      const x = Math.min(box.x, b.x);
+      const y = Math.min(box.y, b.y);
+      box = { x, y, w: Math.max(box.x + box.w, b.x + b.w) - x, h: Math.max(box.y + box.h, b.y + b.h) - y };
+    }
+  }
+  return box;
+}
+
+// The property badges for a selection (one element or many): positioned above
+// its combined bounding box, with the font badge shown when any selected element
+// has text to size. Empty when nothing is selected.
+export function selectionBadges(elements: readonly SceneElement[], ids: readonly string[]): Badge[] {
+  const sel = elements.filter((e) => ids.includes(e.id));
+  const box = unionBounds(sel);
+  if (!box) return [];
+  return badgesForBox(box, sel.some(hasText));
+}
+
+// The selection badge at (px, py), or null.
+export function selectionBadgeAt(
+  elements: readonly SceneElement[],
+  ids: readonly string[],
+  px: number,
+  py: number
+): BadgeKind | null {
+  for (const bd of selectionBadges(elements, ids)) {
+    if (Math.abs(px - bd.x) <= BADGE_GRAB && Math.abs(py - bd.y) <= BADGE_GRAB) return bd.kind;
+  }
+  return null;
+}
+
+// Curated ink tones for the color grid — muted, drawing-friendly colors (incl.
+// the app's coffee brown) rather than a raw spectrum. The default STROKE ink
+// leads, so returning to it is one click. Laid out INK_GRID_COLS per row.
+export const INK_COLORS: readonly string[] = [
+  "#1e1e1e", "#4a4a4a", "#808080", "#b3b3b3", "#5a3a24",
+  "#c0392b", "#e67e22", "#d4a017", "#6a8f3c", "#2e8b7f",
+  "#2e6f9e", "#3f51b5", "#7e57c2", "#b0578d", "#8d6e63",
+];
+export const INK_GRID_COLS = 5;
+
+// Preset text sizes for the font badge's quick menu.
+export const FONT_PRESETS: readonly { label: string; size: number }[] = [
+  { label: "S", size: 12 },
+  { label: "M", size: 16 },
+  { label: "L", size: 24 },
+  { label: "XL", size: 40 },
+];
+
+// Bounds a dragged/typed font size to a sane range.
+export const MIN_FONT_SIZE = 8;
+export const MAX_FONT_SIZE = 96;
+export function clampFontSize(size: number): number {
+  return Math.max(MIN_FONT_SIZE, Math.min(MAX_FONT_SIZE, Math.round(size)));
+}
+
 // --- Arrow-to-element bindings -----------------------------------------------
 //
 // Any element with a rectangular footprint (rectangles and text) offers sixteen
@@ -342,7 +478,7 @@ export function anchorBox(el: SceneElement): { x: number; y: number; w: number; 
     case "rect":
       return { x: el.x, y: el.y, w: el.w, h: el.h };
     case "text": {
-      const { w, h } = measureText(el.text);
+      const { w, h } = measureText(el.text, el.fontSize);
       return { x: el.x, y: el.y, w, h };
     }
     case "arrow":

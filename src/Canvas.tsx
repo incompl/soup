@@ -1,5 +1,26 @@
-import { createEffect, createSignal, onCleanup, onMount, Show } from "solid-js";
-import { fontString, FONT_SIZE, LINE_HEIGHT, newId, elementAt, elementsInBox, handleAt, nearestAnchor, hoveredAnchorElement, type AnchorPos, type HandlePos, type SceneElement } from "./scene";
+import { createEffect, createSignal, For, onCleanup, onMount, Show } from "solid-js";
+import {
+  BADGE_SIZE,
+  clampFontSize,
+  FONT_PRESETS,
+  fontString,
+  FONT_SIZE,
+  INK_COLORS,
+  INK_GRID_COLS,
+  lineHeightFor,
+  newId,
+  elementAt,
+  elementsInBox,
+  handleAt,
+  nearestAnchor,
+  hoveredAnchorElement,
+  selectionBadges,
+  selectionBadgeAt,
+  type AnchorPos,
+  type BadgeKind,
+  type HandlePos,
+  type SceneElement,
+} from "./scene";
 import { renderScene } from "./renderer";
 import { initEditMenu } from "./edit-menu";
 import { fontsReady } from "./fonts";
@@ -42,6 +63,9 @@ interface TextDraft {
   // Set when editing an existing text element (double-click) rather than
   // placing a new one: commit updates this element instead of adding one.
   id?: string;
+  // The element's text size, so the editor matches the painted size. Defaults
+  // to FONT_SIZE for a freshly placed text element.
+  fontSize: number;
 }
 
 // Editing the centered label of an existing rect/arrow (double-click). The
@@ -52,6 +76,8 @@ interface LabelEdit {
   cx: number;
   cy: number;
   initial: string;
+  // The element's label size, so the editor matches the painted size.
+  fontSize: number;
 }
 
 // Center point of a labelable element, where its label editor is anchored.
@@ -87,12 +113,12 @@ const CLICK_SLOP_PX = 4;
 // (Every line follows, since both step by LINE_HEIGHT.) Computed per-open rather
 // than once, since the document's font (and thus its metrics) can change.
 const metricsCtx = document.createElement("canvas").getContext("2d")!;
-function textEditorDy(): number {
-  metricsCtx.font = fontString();
+function textEditorDy(size: number): number {
+  metricsCtx.font = fontString(size);
   const m = metricsCtx.measureText("Mg");
   // Baseline offset from the top of the textarea's first line box.
-  const baselineFromTop = LINE_HEIGHT / 2 + (m.fontBoundingBoxAscent - m.fontBoundingBoxDescent) / 2;
-  return FONT_SIZE - baselineFromTop;
+  const baselineFromTop = lineHeightFor(size) / 2 + (m.fontBoundingBoxAscent - m.fontBoundingBoxDescent) / 2;
+  return size - baselineFromTop;
 }
 
 // The draggable ".titlebar" strip (see App.css) sits above the canvas and
@@ -167,6 +193,47 @@ interface PointerSample {
   vy: number;
 }
 
+// --- Ink grid geometry -------------------------------------------------------
+//
+// The color badge opens a grid of swatches. Its cell layout is computed here so
+// the DOM render (swatch positions) and the drag-time hit-test (which swatch the
+// canvas-captured pointer is over) stay in lockstep — the same single-source
+// pattern the scene's handles/anchors use.
+const SWATCH = 20;
+const SWATCH_GAP = 6;
+const GRID_PAD = 7;
+// Approximate rendered width of the font-preset menu, used only to right-align
+// it under its badge (the DOM sizes it from content); matches .size-popover CSS.
+const FONT_PRESET_WIDTH = 150;
+
+function inkGridSize(): { w: number; h: number } {
+  const rows = Math.ceil(INK_COLORS.length / INK_GRID_COLS);
+  return {
+    w: GRID_PAD * 2 + INK_GRID_COLS * SWATCH + (INK_GRID_COLS - 1) * SWATCH_GAP,
+    h: GRID_PAD * 2 + rows * SWATCH + (rows - 1) * SWATCH_GAP,
+  };
+}
+
+// Top-left of swatch i for a grid whose top-left is (ox, oy).
+function inkCellPos(i: number, ox: number, oy: number): { x: number; y: number } {
+  const col = i % INK_GRID_COLS;
+  const row = Math.floor(i / INK_GRID_COLS);
+  return {
+    x: ox + GRID_PAD + col * (SWATCH + SWATCH_GAP),
+    y: oy + GRID_PAD + row * (SWATCH + SWATCH_GAP),
+  };
+}
+
+// The ink whose swatch contains (px, py) for a grid at origin (ox, oy), or null
+// when the pointer is outside every swatch.
+function inkColorAt(px: number, py: number, ox: number, oy: number): string | null {
+  for (let i = 0; i < INK_COLORS.length; i++) {
+    const c = inkCellPos(i, ox, oy);
+    if (px >= c.x && px <= c.x + SWATCH && py >= c.y && py <= c.y + SWATCH) return INK_COLORS[i];
+  }
+  return null;
+}
+
 export default function Canvas() {
   let canvasEl!: HTMLCanvasElement;
   let containerEl!: HTMLDivElement;
@@ -198,6 +265,39 @@ export default function Canvas() {
 
   let drag: DragState | null = null;
   let lastSample: PointerSample | null = null;
+
+  // An open property popover on the current selection: the size presets (font
+  // badge click) or the ink grid (color badge). x/y is its top-left in canvas
+  // coordinates; ids are the elements a choice applies to. Null when none open.
+  const [popover, setPopover] = createSignal<
+    { kind: "font" | "color"; ids: string[]; x: number; y: number } | null
+  >(null);
+  // The ink swatch under the pointer during a color-badge drag, so the grid can
+  // highlight it. Null when not hovering a swatch (or not dragging color).
+  const [hoverInk, setHoverInk] = createSignal<string | null>(null);
+  // An in-progress drag on a property badge, distinct from the element `drag`
+  // above: a font-badge drag scales the text size; a color-badge drag previews
+  // the ink grid. Applies to every selected element (`ids`); `moved` gates click
+  // (open a popover) vs. drag (commit on up). Color keeps each element's original
+  // ink so an off-grid release reverts.
+  let badgeGesture:
+    | { kind: "font"; ids: string[]; startX: number; startY: number; startSize: number; moved: boolean }
+    | {
+        kind: "color";
+        ids: string[];
+        originals: { id: string; color?: string }[];
+        startX: number;
+        startY: number;
+        moved: boolean;
+      }
+    | null = null;
+
+  // Selecting a different element (or clearing selection) dismisses any open
+  // popover — it belongs to the previously selected element.
+  createEffect(() => {
+    void state.selectedIds;
+    setPopover(null);
+  });
 
   onMount(() => {
     const observer = new ResizeObserver(() => {
@@ -269,7 +369,9 @@ export default function Canvas() {
         if (state.selectedIds.length) removeElements(state.selectedIds);
         break;
       case "Escape":
-        select(null);
+        // Close an open property popover first; otherwise clear the selection.
+        if (popover()) setPopover(null);
+        else select(null);
         break;
       case "Enter": {
         // Enter on a lone selection starts editing its text — the same as
@@ -298,6 +400,18 @@ export default function Canvas() {
 
     switch (state.tool) {
       case "select": {
+        // Property badges ride above the selection (one element or many) and
+        // take top priority — a press there edits font/color for all of them,
+        // never the element(s) underneath.
+        const badge = state.selectedIds.length
+          ? selectionBadgeAt(state.elements, state.selectedIds, x, y)
+          : null;
+        if (badge) {
+          startBadgeGesture(badge, x, y);
+          break;
+        }
+        // Any other canvas press dismisses an open popover.
+        setPopover(null);
         // Resize handles belong to a lone selection; grabbing one takes
         // priority over selecting/moving whatever is underneath it.
         const solo =
@@ -384,8 +498,14 @@ export default function Canvas() {
         // Keep the browser's default focus change from blurring the
         // textarea the moment it appears.
         e.preventDefault();
-        setTextDraft({ x, y });
-        requestAnimationFrame(() => textareaEl?.focus());
+        setTextDraft({ x, y, fontSize: FONT_SIZE });
+        requestAnimationFrame(() => {
+          textareaEl?.focus();
+          // Collapse the fresh editor to its caret box (see min-width in CSS) so
+          // the blinking caret makes the edit mode obvious, matching the
+          // edit-existing/label paths.
+          autosizeText();
+        });
         break;
     }
   }
@@ -448,7 +568,118 @@ export default function Canvas() {
     end: "move",
   };
 
+  // How much the font size changes per pixel of vertical drag on the font badge.
+  const FONT_DRAG_SCALE = 0.5;
+  // The badge pointer's latest position, tracked here (badge moves skip the
+  // predictPointer/lastSample path) so pointer-up can settle the gesture.
+  let badgePointer = { x: 0, y: 0 };
+
+  // Origin (top-left, canvas coords) for a popover opening below the current
+  // selection's `kind` badge, its right edge aligned to the badge's, clamped
+  // on-canvas.
+  function popoverOrigin(kind: BadgeKind, w: number): { x: number; y: number } {
+    const b = selectionBadges(state.elements, state.selectedIds).find((bd) => bd.kind === kind);
+    const bx = b ? b.x : 0;
+    const by = b ? b.y : 0;
+    const x = Math.max(4, Math.min(bx + BADGE_SIZE / 2 - w, size().w - w - 4));
+    return { x, y: by + BADGE_SIZE / 2 + 6 };
+  }
+
+  // Begin a font/color badge gesture over the whole selection. Brackets one undo
+  // step; a color press also opens the ink grid immediately so a drag can preview
+  // over it.
+  function startBadgeGesture(kind: BadgeKind, x: number, y: number) {
+    const ids = [...state.selectedIds];
+    setPopover(null);
+    beginHistory();
+    badgePointer = { x, y };
+    if (kind === "font") {
+      // Anchor the drag to the largest current size so all selected text
+      // converges to one size as it's dragged.
+      const startSize = Math.max(
+        ...ids.map((id) => state.elements.find((e) => e.id === id)?.fontSize ?? FONT_SIZE)
+      );
+      badgeGesture = { kind, ids, startX: x, startY: y, startSize, moved: false };
+    } else {
+      const originals = ids.map((id) => ({ id, color: state.elements.find((e) => e.id === id)?.color }));
+      badgeGesture = { kind, ids, originals, startX: x, startY: y, moved: false };
+      const origin = popoverOrigin("color", inkGridSize().w);
+      setPopover({ kind: "color", ids, x: origin.x, y: origin.y });
+    }
+  }
+
+  function handleBadgeMove(x: number, y: number) {
+    const g = badgeGesture;
+    if (!g) return;
+    badgePointer = { x, y };
+    if (!g.moved && Math.hypot(x - g.startX, y - g.startY) > CLICK_SLOP_PX) g.moved = true;
+    if (!g.moved) return;
+    if (g.kind === "font") {
+      // Drag up to grow, down to shrink, from the size at press.
+      const fontSize = clampFontSize(g.startSize + (g.startY - y) * FONT_DRAG_SCALE);
+      updateElements(g.ids.map((id) => ({ id, patch: { fontSize } })));
+    } else {
+      const pop = popover();
+      const ink = pop ? inkColorAt(x, y, pop.x, pop.y) : null;
+      setHoverInk(ink);
+      // Preview the hovered swatch, reverting each element to its own ink when
+      // the pointer is between swatches.
+      updateElements(
+        g.originals.map((o) => ({ id: o.id, patch: { color: ink ?? o.color } }))
+      );
+    }
+  }
+
+  function handleBadgeUp() {
+    const g = badgeGesture;
+    if (!g) return;
+    badgeGesture = null;
+    const { x, y } = badgePointer;
+    if (g.kind === "font") {
+      commitHistory();
+      // A click (no drag) opens the preset-size menu instead.
+      if (!g.moved) {
+        const origin = popoverOrigin("font", FONT_PRESET_WIDTH);
+        setPopover({ kind: "font", ids: g.ids, x: origin.x, y: origin.y });
+      }
+      return;
+    }
+    // Color.
+    setHoverInk(null);
+    if (g.moved) {
+      const pop = popover();
+      if (!pop || inkColorAt(x, y, pop.x, pop.y) === null) {
+        // Released off the grid — restore each element's original ink.
+        updateElements(g.originals.map((o) => ({ id: o.id, patch: { color: o.color } })));
+      }
+      commitHistory();
+      setPopover(null);
+    } else {
+      // A click leaves the grid open to pick a swatch (persistent picker).
+      commitHistory();
+    }
+  }
+
+  // Commit a swatch chosen from the open ink grid (persistent-picker click) to
+  // every selected element, then close it. One discrete undo step.
+  function chooseInk(color: string) {
+    const ids = popover()?.ids;
+    if (ids) updateElements(ids.map((id) => ({ id, patch: { color } })));
+    setPopover(null);
+  }
+
+  // Commit a preset size chosen from the open font menu, then close it.
+  function chooseFontSize(fontSize: number) {
+    const ids = popover()?.ids;
+    if (ids) updateElements(ids.map((id) => ({ id, patch: { fontSize } })));
+    setPopover(null);
+  }
+
   function onPointerMove(e: PointerEvent) {
+    if (badgeGesture) {
+      handleBadgeMove(e.offsetX, e.offsetY);
+      return;
+    }
     const m = marquee();
     if (m) {
       // Grow the box to the pointer and reselect live, so elements light up as
@@ -464,14 +695,16 @@ export default function Canvas() {
       // Not dragging: reflect whether the pointer is over a resize handle of
       // the selected element with a matching cursor.
       if (state.tool === "select") {
-        // Handles only appear for a lone selection, so that's the only case a
-        // resize cursor applies.
+        // Badges appear for any selection; handles only for a lone one.
+        const badge = state.selectedIds.length
+          ? selectionBadgeAt(state.elements, state.selectedIds, e.offsetX, e.offsetY)
+          : null;
         const solo =
           state.selectedIds.length === 1
             ? state.elements.find((el) => el.id === state.selectedIds[0])
             : undefined;
         const over = solo ? handleAt(solo, e.offsetX, e.offsetY) : null;
-        canvasEl.style.cursor = over ? HANDLE_CURSOR[over] : "";
+        canvasEl.style.cursor = badge ? "pointer" : over ? HANDLE_CURSOR[over] : "";
       } else if (state.tool === "arrow") {
         // Preview which spot the initial click would start bound to, and reveal
         // the hovered element's cramped-out quarter spots.
@@ -529,6 +762,11 @@ export default function Canvas() {
   }
 
   function onPointerUp() {
+    // A property badge owns its whole gesture (font scale / color pick).
+    if (badgeGesture) {
+      handleBadgeUp();
+      return;
+    }
     // A marquee owns the whole gesture: selection was applied live during the
     // move, so dropping it just ends the marquee.
     if (marquee()) {
@@ -536,6 +774,23 @@ export default function Canvas() {
       return;
     }
     if (!drag) return;
+    // Clicking (rather than dragging) an arrow endpoint toggles that end's
+    // arrowhead — the endpoint handle sits on the arrowhead, so a still press
+    // means "toggle", a drag means "resize/rebind". Short-circuits the settle
+    // below so the endpoint isn't re-placed.
+    if ((drag.handle === "start" || drag.handle === "end") && lastSample) {
+      const moved = Math.hypot(lastSample.x - drag.startX, lastSample.y - drag.startY) > CLICK_SLOP_PX;
+      const arrow = drag.originals[0];
+      if (!moved && arrow.type === "arrow") {
+        if (drag.handle === "start") updateElement(arrow.id, { startHead: !(arrow.startHead ?? false) });
+        else updateElement(arrow.id, { endHead: !(arrow.endHead ?? true) });
+        drag = null;
+        commitHistory();
+        setPlacingEnd(false);
+        setActiveAnchor(null);
+        return;
+      }
+    }
     // Settle at the last true pointer position, dropping any prediction.
     if (lastSample) applyDrag(lastSample.x, lastSample.y);
     // A plain click inside a multi-selection (no real drag) collapses to the
@@ -583,7 +838,7 @@ export default function Canvas() {
       // Bracket the whole edit: the per-keystroke writes (onTextInput) are
       // suppressed until commitText seals one undo step.
       beginHistory();
-      setTextDraft({ x: hit.x, y: hit.y, id: hit.id });
+      setTextDraft({ x: hit.x, y: hit.y, id: hit.id, fontSize: hit.fontSize ?? FONT_SIZE });
       requestAnimationFrame(() => {
         if (!textareaEl) return;
         textareaEl.value = hit.text;
@@ -600,7 +855,7 @@ export default function Canvas() {
     select(hit.id);
     const { cx, cy } = elementCenter(hit);
     setLabelText(hit.label ?? "");
-    setLabelEdit({ id: hit.id, cx, cy, initial: hit.label ?? "" });
+    setLabelEdit({ id: hit.id, cx, cy, initial: hit.label ?? "", fontSize: hit.fontSize ?? FONT_SIZE });
     requestAnimationFrame(() => {
       if (!labelEl) return;
       labelEl.value = hit.label ?? "";
@@ -622,8 +877,10 @@ export default function Canvas() {
   function autosizeLabel() {
     const ta = labelEl;
     if (!ta) return;
+    // See autosizeText: collapse to 0 so scrollWidth is the true content width
+    // rather than the textarea's intrinsic ~20-col minimum.
     ta.style.height = "auto";
-    ta.style.width = "auto";
+    ta.style.width = "0";
     ta.style.height = `${ta.scrollHeight}px`;
     ta.style.width = `${ta.scrollWidth}px`;
   }
@@ -669,8 +926,11 @@ export default function Canvas() {
   function autosizeText() {
     const ta = textareaEl;
     if (!ta) return;
+    // Collapse first: a textarea sized `auto` sits at its intrinsic ~20-col
+    // width, so scrollWidth would never report anything narrower. Zeroing it
+    // makes scrollWidth the true content width, so the box hugs the text.
     ta.style.height = "auto";
-    ta.style.width = "auto";
+    ta.style.width = "0";
     ta.style.height = `${ta.scrollHeight}px`;
     ta.style.width = `${ta.scrollWidth}px`;
   }
@@ -746,9 +1006,9 @@ export default function Canvas() {
             class="text-editor"
             style={{
               left: `${draft().x}px`,
-              top: `${draft().y + textEditorDy()}px`,
-              font: fontString(),
-              "line-height": `${LINE_HEIGHT}px`,
+              top: `${draft().y + textEditorDy(draft().fontSize)}px`,
+              font: fontString(draft().fontSize),
+              "line-height": `${lineHeightFor(draft().fontSize)}px`,
               // Show the selection border around the editor, drawn here (not on
               // the canvas, which hides the element while its editor is up) so
               // it hugs the textarea and grows with it as the text changes size.
@@ -771,14 +1031,70 @@ export default function Canvas() {
             style={{
               left: `${edit().cx}px`,
               top: `${edit().cy}px`,
-              font: fontString(),
-              "line-height": `${LINE_HEIGHT}px`,
+              font: fontString(edit().fontSize),
+              "line-height": `${lineHeightFor(edit().fontSize)}px`,
             }}
             onInput={onLabelInput}
             onKeyDown={onLabelKeyDown}
             onBlur={commitLabel}
           />
         )}
+      </Show>
+      {/* Font-size preset menu, opened by clicking the font badge. */}
+      <Show when={popover()?.kind === "font" && popover()}>
+        {(pop) => (
+          <div class="size-popover" style={{ left: `${pop().x}px`, top: `${pop().y}px` }}>
+            <For each={FONT_PRESETS}>
+              {(preset) => (
+                <button
+                  class="size-option"
+                  classList={{
+                    active:
+                      (state.elements.find((e) => pop().ids.includes(e.id))?.fontSize ?? FONT_SIZE) ===
+                      preset.size,
+                  }}
+                  onClick={() => chooseFontSize(preset.size)}
+                >
+                  {preset.label}
+                </button>
+              )}
+            </For>
+          </div>
+        )}
+      </Show>
+      {/* Ink grid, opened by pressing the color badge (drag to pick, or click a
+          swatch while it stays open). */}
+      <Show when={popover()?.kind === "color" && popover()}>
+        {(pop) => {
+          const gs = inkGridSize();
+          const current = () => state.elements.find((e) => pop().ids.includes(e.id))?.color;
+          return (
+            <div
+              class="ink-grid"
+              style={{ left: `${pop().x}px`, top: `${pop().y}px`, width: `${gs.w}px`, height: `${gs.h}px` }}
+            >
+              <For each={INK_COLORS}>
+                {(color, i) => {
+                  const c = inkCellPos(i(), 0, 0);
+                  return (
+                    <button
+                      class="ink-swatch"
+                      classList={{ hover: hoverInk() === color, active: current() === color }}
+                      style={{
+                        left: `${c.x}px`,
+                        top: `${c.y}px`,
+                        width: `${SWATCH}px`,
+                        height: `${SWATCH}px`,
+                        background: color,
+                      }}
+                      onClick={() => chooseInk(color)}
+                    />
+                  );
+                }}
+              </For>
+            </div>
+          );
+        }}
       </Show>
     </div>
   );

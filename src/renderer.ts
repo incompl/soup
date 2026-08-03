@@ -8,14 +8,17 @@ import type { RoughCanvas } from "roughjs/bin/canvas";
 import type { Options } from "roughjs/bin/core";
 import {
   ANCHOR_DOT_R,
+  BADGE_SIZE,
   elementAnchors,
   elementHandles,
   fontString,
   FONT_SIZE,
   HANDLE_SIZE,
-  LINE_HEIGHT,
+  lineHeightFor,
   measureText,
+  selectionBadges,
   type AnchorPos,
+  type Badge,
   type LineStyle,
   type SceneElement,
 } from "./scene";
@@ -62,14 +65,14 @@ const CLEAN_OVERRIDES: Options = { roughness: 0, bowing: 0, disableMultiStroke: 
 
 // Per-element rough options for a shape, folding in the line style and the
 // element's stable seed. The single source of truth for both draw paths.
-export function shapeOptsFor(lineStyle: LineStyle, id: string): Options {
+export function shapeOptsFor(lineStyle: LineStyle, id: string, color?: string): Options {
   const base = lineStyle === "clean" ? { ...SHAPE_OPTS, ...CLEAN_OVERRIDES } : SHAPE_OPTS;
-  return { ...base, seed: elementSeed(id) };
+  return { ...base, stroke: color ?? STROKE, seed: elementSeed(id) };
 }
 
-export function arrowOptsFor(lineStyle: LineStyle, id: string): Options {
+export function arrowOptsFor(lineStyle: LineStyle, id: string, color?: string): Options {
   const base = lineStyle === "clean" ? { ...ARROW_OPTS, ...CLEAN_OVERRIDES } : ARROW_OPTS;
-  return { ...base, seed: elementSeed(id) };
+  return { ...base, stroke: color ?? STROKE, seed: elementSeed(id) };
 }
 
 // One RoughCanvas per underlying <canvas>; cheap to reuse across renders.
@@ -135,6 +138,15 @@ export function renderScene(
   const selected = elements.filter((e) => selectedIds.includes(e.id) && e.id !== editingTextId);
   for (const el of selected) drawSelection(ctx, el, selected.length === 1);
 
+  // Property badges ride above the whole selection's box (one element or many),
+  // so they're drawn once here rather than per element. The swatch shows the
+  // primary (first) selected element's ink.
+  if (selected.length) {
+    const swatch = selected[0].color ?? STROKE;
+    const ids = selected.map((e) => e.id);
+    for (const bd of selectionBadges(elements, ids)) drawBadge(ctx, bd, swatch);
+  }
+
   if (showAnchors) drawAnchors(ctx, elements, activeAnchor);
 
   if (marquee) drawMarquee(ctx, marquee);
@@ -196,16 +208,18 @@ function drawElement(
   editingText: string | null
 ) {
   const editing = editingText !== null;
+  const size = el.fontSize ?? FONT_SIZE;
+  const ink = el.color ?? STROKE;
   switch (el.type) {
     case "rect": {
-      rc.rectangle(el.x, el.y, el.w, el.h, shapeOptsFor(lineStyle, el.id));
+      rc.rectangle(el.x, el.y, el.w, el.h, shapeOptsFor(lineStyle, el.id, el.color));
       if (!editing && el.label) {
-        drawLabel(ctx, el.label, el.x + el.w / 2, el.y + el.h / 2);
+        drawLabel(ctx, el.label, el.x + el.w / 2, el.y + el.h / 2, size, ink);
       }
       break;
     }
     case "arrow": {
-      const opts = arrowOptsFor(lineStyle, el.id);
+      const opts = arrowOptsFor(lineStyle, el.id, el.color);
       // Break around the live text while editing, else the committed label.
       const breakText = editing ? editingText : el.label;
       const dx = el.x2 - el.x1;
@@ -219,7 +233,7 @@ function drawElement(
         // Leave a gap centered on the midpoint just big enough to clear the
         // label's box, then draw the two shaft segments on either side. When
         // the label spans the whole arrow, draw no shaft at all.
-        const { w, h } = measureText(breakText);
+        const { w, h } = measureText(breakText, size);
         const hw = w / 2 + LABEL_PAD;
         const hh = h / 2 + LABEL_PAD;
         const sx = Math.abs(ux) < 1e-6 ? Infinity : hw / Math.abs(ux);
@@ -232,41 +246,65 @@ function drawElement(
       } else {
         rc.line(el.x1, el.y1, el.x2, el.y2, opts);
       }
-      const angle = Math.atan2(dy, dx);
-      for (const side of [-1, 1]) {
-        const a = angle + side * (Math.PI / 6);
-        rc.line(el.x2, el.y2, el.x2 - ARROWHEAD_LEN * Math.cos(a), el.y2 - ARROWHEAD_LEN * Math.sin(a), opts);
-      }
+      // Heads default to end-only when the flags are absent (the classic look).
+      if (el.endHead !== false) drawArrowhead(rc, el.x2, el.y2, dx, dy, opts);
+      if (el.startHead) drawArrowhead(rc, el.x1, el.y1, -dx, -dy, opts);
       // The DOM editor paints the label while editing; only draw it otherwise.
-      if (!editing && el.label) drawLabel(ctx, el.label, mx, my);
+      if (!editing && el.label) drawLabel(ctx, el.label, mx, my, size, ink);
       break;
     }
     case "text": {
       // Text stays crisp — no roughjs.
-      ctx.strokeStyle = STROKE;
-      ctx.fillStyle = STROKE;
-      ctx.font = fontString();
+      ctx.fillStyle = ink;
+      ctx.font = fontString(size);
       ctx.textBaseline = "alphabetic";
+      const lh = lineHeightFor(size);
       const lines = el.text.split("\n");
       lines.forEach((line, i) => {
-        ctx.fillText(line, el.x, el.y + FONT_SIZE + i * LINE_HEIGHT);
+        ctx.fillText(line, el.x, el.y + size + i * lh);
       });
       break;
     }
   }
 }
 
+// One arrowhead: the two barbs at (tipX, tipY), opening back along the shaft
+// direction (dx, dy). Pass the reversed direction for a tail head. Shares the
+// element's rough opts so head and shaft match.
+function drawArrowhead(
+  rc: RoughCanvas,
+  tipX: number,
+  tipY: number,
+  dx: number,
+  dy: number,
+  opts: Options
+) {
+  const angle = Math.atan2(dy, dx);
+  for (const side of [-1, 1]) {
+    const a = angle + side * (Math.PI / 6);
+    rc.line(tipX, tipY, tipX - ARROWHEAD_LEN * Math.cos(a), tipY - ARROWHEAD_LEN * Math.sin(a), opts);
+  }
+}
+
 // Multi-line text centered on (cx, cy). Resets the shared alignment state
 // afterward so the standalone-text branch (top-left, alphabetic) is unaffected.
-function drawLabel(ctx: CanvasRenderingContext2D, text: string, cx: number, cy: number) {
-  ctx.fillStyle = STROKE;
-  ctx.font = fontString();
+function drawLabel(
+  ctx: CanvasRenderingContext2D,
+  text: string,
+  cx: number,
+  cy: number,
+  size: number,
+  color: string
+) {
+  ctx.fillStyle = color;
+  ctx.font = fontString(size);
   ctx.textAlign = "center";
   ctx.textBaseline = "middle";
+  const lh = lineHeightFor(size);
   const lines = text.split("\n");
-  const top = cy - ((lines.length - 1) * LINE_HEIGHT) / 2;
+  const top = cy - ((lines.length - 1) * lh) / 2;
   lines.forEach((line, i) => {
-    ctx.fillText(line, cx, top + i * LINE_HEIGHT);
+    ctx.fillText(line, cx, top + i * lh);
   });
   ctx.textAlign = "start";
   ctx.textBaseline = "alphabetic";
@@ -285,9 +323,9 @@ function drawSelection(ctx: CanvasRenderingContext2D, el: SceneElement, withHand
       h = Math.abs(el.y2 - el.y1);
       break;
     case "text": {
-      const size = measureText(el.text);
+      const box = measureText(el.text, el.fontSize);
       ({ x, y } = el);
-      ({ w, h } = size);
+      ({ w, h } = box);
       break;
     }
   }
@@ -310,4 +348,47 @@ function drawSelection(ctx: CanvasRenderingContext2D, el: SceneElement, withHand
     ctx.strokeStyle = SELECTION;
     ctx.strokeRect(hnd.x - s / 2, hnd.y - s / 2, s, s);
   }
+}
+
+// A property badge: a small rounded square with a colored outline, holding
+// either an "A" glyph (font) or a filled swatch of the element's ink (color).
+function drawBadge(ctx: CanvasRenderingContext2D, bd: Badge, ink: string) {
+  const s = BADGE_SIZE;
+  const x = bd.x - s / 2;
+  const y = bd.y - s / 2;
+  ctx.lineWidth = 1.5;
+  ctx.strokeStyle = SELECTION;
+  ctx.fillStyle = "#ffffff";
+  roundRect(ctx, x, y, s, s, 3);
+  ctx.fill();
+  ctx.stroke();
+  if (bd.kind === "font") {
+    ctx.fillStyle = STROKE;
+    ctx.font = "bold 11px ui-sans-serif, system-ui, sans-serif";
+    ctx.textAlign = "center";
+    ctx.textBaseline = "alphabetic";
+    // Center the glyph's actual ink box (not the em box) on the badge center:
+    // place the baseline so the cap-height "A" sits truly centered.
+    const m = ctx.measureText("A");
+    const inkCenter = (m.actualBoundingBoxAscent - m.actualBoundingBoxDescent) / 2;
+    ctx.fillText("A", bd.x, bd.y + inkCenter);
+    ctx.textAlign = "start";
+  } else {
+    // Inner swatch of the current ink.
+    ctx.fillStyle = ink;
+    roundRect(ctx, x + 3.5, y + 3.5, s - 7, s - 7, 2);
+    ctx.fill();
+  }
+}
+
+function roundRect(
+  ctx: CanvasRenderingContext2D,
+  x: number,
+  y: number,
+  w: number,
+  h: number,
+  r: number
+) {
+  ctx.beginPath();
+  ctx.roundRect(x, y, w, h, r);
 }

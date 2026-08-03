@@ -151,7 +151,7 @@ fn build_document_menu<R: Runtime>(app: &AppHandle<R>) -> tauri::Result<(Submenu
     let line_clean = CheckMenuItem::with_id(app, "line:clean", "Clean", true, false, None::<&str>)?;
     let line_style = Submenu::with_items(app, "Line Style", true, &[&line_rough, &line_clean])?;
 
-    let font_sketch = CheckMenuItem::with_id(app, "font:sketch", "Sketch", true, true, None::<&str>)?;
+    let font_sketch = CheckMenuItem::with_id(app, "font:sketch", "Sketchy", true, true, None::<&str>)?;
     let font_serif = CheckMenuItem::with_id(app, "font:serif", "Serif", true, false, None::<&str>)?;
     let font_sans = CheckMenuItem::with_id(app, "font:sans", "Sans-serif", true, false, None::<&str>)?;
     let font = Submenu::with_items(app, "Font", true, &[&font_sketch, &font_serif, &font_sans])?;
